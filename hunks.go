@@ -84,7 +84,33 @@ var (
 	addedStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	deletedStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	lineNumStyle     = lipgloss.NewStyle().Faint(true)
+	noteStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
+	cursorStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 )
+
+var cursorIndicator = cursorStyle.Render("▸ ")
+
+func notesByLine(notes []Note) map[int][]Note {
+	m := map[int][]Note{}
+	for _, n := range notes {
+		m[n.LineNo] = append(m[n.LineNo], n)
+	}
+	return m
+}
+
+func renderNoteLines(b *strings.Builder, notes []Note, lineNum *int, lineMap *[]int) {
+	for _, n := range notes {
+		for i, line := range strings.Split(n.Body, "\n") {
+			prefix := "  \u2503 "
+			if i == 0 {
+				prefix = "  \u2503 RH: "
+			}
+			b.WriteString(noteStyle.Render(prefix+line) + "\n")
+			*lineMap = append(*lineMap, 0)
+			*lineNum++
+		}
+	}
+}
 
 type hunkRange struct {
 	newStart int
@@ -111,8 +137,10 @@ func parseHunkRange(header string) hunkRange {
 // header so you can see what `space` / `up` / `down` will act on. Returns
 // the rendered body and a parallel slice with each hunk's header line offset
 // for SetYOffset-based navigation.
-func renderHunks(hunks []Hunk, marks map[string]bool, focusedIdx int) (string, []int) {
+func renderHunks(hunks []Hunk, marks map[string]bool, focusedIdx int, notes []Note, cursorLine int) (string, []int, []int) {
+	byLine := notesByLine(notes)
 	var b strings.Builder
+	var lineMap []int
 	hunkLines := make([]int, 0, len(hunks))
 	lineNum := 0
 	for i, h := range hunks {
@@ -126,13 +154,39 @@ func renderHunks(hunks []Hunk, marks map[string]bool, focusedIdx int) (string, [
 		}
 		hunkLines = append(hunkLines, lineNum)
 		b.WriteString(headerLine + "\n")
+		lineMap = append(lineMap, 0)
 		lineNum++
+
+		r := parseHunkRange(h.Header)
+		fileLine := r.newStart
 		for _, line := range h.BodyLines {
-			b.WriteString(colorDiffLine(line) + "\n")
+			cur := fileLine
+			isFile := true
+			if len(line) > 0 && line[0] == '-' {
+				isFile = false
+			}
+
+			prefix := ""
+			if lineNum == cursorLine {
+				prefix = cursorIndicator
+			}
+			b.WriteString(prefix + colorDiffLine(line) + "\n")
+			if isFile {
+				lineMap = append(lineMap, cur)
+			} else {
+				lineMap = append(lineMap, 0)
+			}
 			lineNum++
+
+			if isFile {
+				if ln, ok := byLine[cur]; ok {
+					renderNoteLines(&b, ln, &lineNum, &lineMap)
+				}
+				fileLine++
+			}
 		}
 	}
-	return b.String(), hunkLines
+	return b.String(), hunkLines, lineMap
 }
 
 func colorDiffLine(line string) string {
@@ -152,7 +206,8 @@ func colorDiffLine(line string) string {
 // renderFullFile produces a full-file view with diff lines colored inline.
 // Unchanged lines show with line numbers; additions are green, deletions red.
 // Hunk headers with mark indicators are shown at each change boundary.
-func renderFullFile(fileContent string, hunks []Hunk, marks map[string]bool, focusedIdx int) (string, []int) {
+func renderFullFile(fileContent string, hunks []Hunk, marks map[string]bool, focusedIdx int, notes []Note, cursorLine int) (string, []int, []int) {
+	byLine := notesByLine(notes)
 	fileLines := strings.Split(fileContent, "\n")
 	if len(fileLines) > 0 && fileLines[len(fileLines)-1] == "" {
 		fileLines = fileLines[:len(fileLines)-1]
@@ -168,30 +223,41 @@ func renderFullFile(fileContent string, hunks []Hunk, marks map[string]bool, foc
 	}
 
 	var b strings.Builder
+	var lineMap []int
 	hunkLineOffsets := make([]int, len(hunks))
 	outputLine := 0
-	newFileLine := 1 // 1-indexed line in the new file
+	newFileLine := 1
 	gutterW := len(fmt.Sprintf("%d", len(fileLines)+100))
 
 	writeLine := func(num int, text string) {
+		prefix := ""
+		if outputLine == cursorLine {
+			prefix = cursorIndicator
+		}
 		gutter := lineNumStyle.Render(fmt.Sprintf("%*d", gutterW, num))
-		b.WriteString(gutter + "  " + text + "\n")
+		b.WriteString(prefix + gutter + "  " + text + "\n")
+		lineMap = append(lineMap, num)
 		outputLine++
 	}
 	writeUnnum := func(text string) {
 		pad := strings.Repeat(" ", gutterW)
 		b.WriteString(pad + "  " + text + "\n")
+		lineMap = append(lineMap, 0)
 		outputLine++
+	}
+	emitNotes := func(fileLineNo int) {
+		if ln, ok := byLine[fileLineNo]; ok {
+			renderNoteLines(&b, ln, &outputLine, &lineMap)
+		}
 	}
 
 	for hi, ph := range parsed {
-		// Plain lines before this hunk.
 		for newFileLine < ph.r.newStart && newFileLine-1 < len(fileLines) {
 			writeLine(newFileLine, fileLines[newFileLine-1])
+			emitNotes(newFileLine)
 			newFileLine++
 		}
 
-		// Hunk header.
 		mark := "[ ]"
 		if marks[ph.Hash] {
 			mark = markedStyle.Render("[✓]")
@@ -203,35 +269,37 @@ func renderFullFile(fileContent string, hunks []Hunk, marks map[string]bool, foc
 		hunkLineOffsets[hi] = outputLine
 		writeUnnum(headerLine)
 
-		// Replay hunk body.
 		for _, line := range ph.BodyLines {
 			if len(line) == 0 {
 				writeLine(newFileLine, "")
+				emitNotes(newFileLine)
 				newFileLine++
 				continue
 			}
 			switch line[0] {
 			case '+':
 				writeLine(newFileLine, addedStyle.Render(line[1:]))
+				emitNotes(newFileLine)
 				newFileLine++
 			case '-':
 				writeUnnum(deletedStyle.Render(line))
-			default: // context line (space prefix)
+			default:
 				text := line
 				if len(text) > 0 && text[0] == ' ' {
 					text = text[1:]
 				}
 				writeLine(newFileLine, text)
+				emitNotes(newFileLine)
 				newFileLine++
 			}
 		}
 	}
 
-	// Remaining lines after last hunk.
 	for newFileLine-1 < len(fileLines) {
 		writeLine(newFileLine, fileLines[newFileLine-1])
+		emitNotes(newFileLine)
 		newFileLine++
 	}
 
-	return b.String(), hunkLineOffsets
+	return b.String(), hunkLineOffsets, lineMap
 }

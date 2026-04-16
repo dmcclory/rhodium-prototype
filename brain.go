@@ -79,6 +79,17 @@ func LoadBrain() (*Brain, error) {
 			head_sha TEXT    NOT NULL,
 			PRIMARY KEY (repo, number)
 		);
+		DROP TABLE IF EXISTS notes;
+		CREATE TABLE IF NOT EXISTS notes (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			pr_key     TEXT    NOT NULL,
+			path       TEXT    NOT NULL,
+			line_no    INTEGER NOT NULL,
+			line_hash  TEXT    NOT NULL,
+			body       TEXT    NOT NULL,
+			created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_notes_file ON notes (pr_key, path);
 	`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate brain db: %w", err)
@@ -166,6 +177,48 @@ func (b *Brain) SetPRCache(prs []PR) error {
 		}
 	}
 	return tx.Commit()
+}
+
+type Note struct {
+	ID        int64
+	PRKey     string
+	Path      string
+	LineNo    int
+	LineHash  string
+	Body      string
+	CreatedAt string
+}
+
+func (b *Brain) NotesForFile(repo string, pr int, path string) []Note {
+	key := prKey(repo, pr)
+	rows, err := b.db.Query(
+		`SELECT id, pr_key, path, line_no, line_hash, body, created_at FROM notes WHERE pr_key = ? AND path = ? ORDER BY line_no, id`,
+		key, path)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []Note
+	for rows.Next() {
+		var n Note
+		if rows.Scan(&n.ID, &n.PRKey, &n.Path, &n.LineNo, &n.LineHash, &n.Body, &n.CreatedAt) == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func (b *Brain) SaveNote(repo string, pr int, path string, lineNo int, lineHash, body string) error {
+	key := prKey(repo, pr)
+	_, err := b.db.Exec(
+		`INSERT INTO notes (pr_key, path, line_no, line_hash, body) VALUES (?, ?, ?, ?, ?)`,
+		key, path, lineNo, lineHash, body)
+	return err
+}
+
+func (b *Brain) DeleteNote(id int64) error {
+	_, err := b.db.Exec(`DELETE FROM notes WHERE id = ?`, id)
+	return err
 }
 
 func (b *Brain) Status(repo string, pr int, fc FileChange) FileStatus {

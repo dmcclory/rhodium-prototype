@@ -124,3 +124,55 @@ func TestBrainPRCache(t *testing.T) {
 		t.Fatalf("reload cache: got %d, want %d", len(got2), len(want))
 	}
 }
+
+func TestBrainNotes(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
+
+	b, err := LoadBrain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	// No notes initially.
+	if notes := b.NotesForFile("acme/web", 42, "src/main.go"); len(notes) != 0 {
+		t.Fatalf("fresh: got %d notes, want 0", len(notes))
+	}
+
+	// Save two notes on different lines.
+	if err := b.SaveNote("acme/web", 42, "src/main.go", 10, "hash1", "first note"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SaveNote("acme/web", 42, "src/main.go", 20, "hash2", "second note"); err != nil {
+		t.Fatal(err)
+	}
+
+	notes := b.NotesForFile("acme/web", 42, "src/main.go")
+	if len(notes) != 2 {
+		t.Fatalf("after save: got %d notes, want 2", len(notes))
+	}
+	if notes[0].Body != "first note" || notes[0].LineNo != 10 {
+		t.Errorf("note[0]: got %q on line %d", notes[0].Body, notes[0].LineNo)
+	}
+	if notes[1].Body != "second note" || notes[1].LineNo != 20 {
+		t.Errorf("note[1]: got %q on line %d", notes[1].Body, notes[1].LineNo)
+	}
+
+	// Delete first note.
+	if err := b.DeleteNote(notes[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	notes = b.NotesForFile("acme/web", 42, "src/main.go")
+	if len(notes) != 1 {
+		t.Fatalf("after delete: got %d notes, want 1", len(notes))
+	}
+	if notes[0].Body != "second note" {
+		t.Errorf("remaining: got %q, want %q", notes[0].Body, "second note")
+	}
+
+	// Notes on a different file shouldn't appear.
+	if notes := b.NotesForFile("acme/web", 42, "other.go"); len(notes) != 0 {
+		t.Fatalf("other file: got %d notes, want 0", len(notes))
+	}
+}

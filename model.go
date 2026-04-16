@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -108,9 +110,18 @@ type model struct {
 	// Diff view state.
 	currentHunks []Hunk
 	currentMarks map[string]bool
+	currentNotes []Note
 	hunkLines    []int
+	lineMap      []int // output line → new-file line number (0 = non-file line)
 	hunkIdx      int
+	cursorLine   int    // output line the cursor is on
 	blobContent  string // full file content, empty until blob loads
+
+	// Note input state.
+	noting       bool
+	noteLineNo   int
+	noteLineHash string
+	noteInput    textarea.Model
 
 	loadingFiles bool
 	statusMsg    string
@@ -131,6 +142,11 @@ func newModel(cfg *Config, brain *Brain) model {
 
 	vp := viewport.New(0, 0)
 
+	ti := textarea.New()
+	ti.Placeholder = "Write a note... (ctrl+d to save, esc to cancel)"
+	ti.SetHeight(3)
+	ti.ShowLineNumbers = false
+
 	m := model{
 		cfg:     cfg,
 		brain:   brain,
@@ -138,6 +154,7 @@ func newModel(cfg *Config, brain *Brain) model {
 		prs:     prList,
 		files:   fileList,
 		diff:    vp,
+		noteInput: ti,
 		prFiles:   map[string][]FileChange{},
 		freshKeys: map[string]bool{},
 	}
@@ -359,6 +376,7 @@ func (m *model) openFile(fc FileChange) tea.Cmd {
 	m.blobContent = ""
 	m.currentHunks = parseHunks(fc.Patch)
 	m.currentMarks = m.brain.HunkMarks(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
+	m.currentNotes = m.brain.NotesForFile(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
 	m.hunkIdx = firstUnmarked(m.currentHunks, m.currentMarks)
 	m.redrawDiff()
 	m.jumpToCurrentHunk()
@@ -390,13 +408,15 @@ func (m *model) redrawDiff() {
 	}
 	var body string
 	var lines []int
+	var lmap []int
 	if m.blobContent != "" {
-		body, lines = renderFullFile(m.blobContent, m.currentHunks, m.currentMarks, m.hunkIdx)
+		body, lines, lmap = renderFullFile(m.blobContent, m.currentHunks, m.currentMarks, m.hunkIdx, m.currentNotes, m.cursorLine)
 	} else {
-		body, lines = renderHunks(m.currentHunks, m.currentMarks, m.hunkIdx)
+		body, lines, lmap = renderHunks(m.currentHunks, m.currentMarks, m.hunkIdx, m.currentNotes, m.cursorLine)
 	}
 	m.diff.SetContent(body)
 	m.hunkLines = lines
+	m.lineMap = lmap
 }
 
 func (m *model) jumpToCurrentHunk() {
@@ -413,6 +433,48 @@ func (m *model) allHunksMarked() bool {
 		}
 	}
 	return len(m.currentHunks) > 0
+}
+
+func (m *model) moveCursor(delta int) {
+	next := m.cursorLine + delta
+	if next < 0 {
+		next = 0
+	}
+	if max := len(m.lineMap) - 1; max >= 0 && next > max {
+		next = max
+	}
+	m.cursorLine = next
+	m.redrawDiff()
+	// Scroll viewport to keep cursor visible.
+	if m.cursorLine < m.diff.YOffset {
+		m.diff.SetYOffset(m.cursorLine)
+	} else if m.cursorLine >= m.diff.YOffset+m.diff.Height {
+		m.diff.SetYOffset(m.cursorLine - m.diff.Height + 1)
+	}
+}
+
+func (m *model) cursorFileLine() int {
+	if m.cursorLine < 0 || m.cursorLine >= len(m.lineMap) {
+		return 0
+	}
+	return m.lineMap[m.cursorLine]
+}
+
+func (m *model) cursorLineHash(lineNo int) string {
+	if m.blobContent == "" {
+		return ""
+	}
+	lines := strings.Split(m.blobContent, "\n")
+	idx := lineNo - 1
+	if idx < 0 || idx >= len(lines) {
+		return ""
+	}
+	return hashLine(lines[idx])
+}
+
+func hashLine(s string) string {
+	h := hashHunkBody([]string{"+" + s})
+	return h
 }
 
 func (m *model) saveMarks() {
@@ -496,6 +558,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.view == viewDiff && m.noting {
+			switch msg.String() {
+			case "esc":
+				m.noting = false
+				m.noteInput.Blur()
+				return m, nil
+			case "ctrl+d":
+				body := strings.TrimSpace(m.noteInput.Value())
+				m.noting = false
+				m.noteInput.Blur()
+				if body != "" {
+					if err := m.brain.SaveNote(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile, m.noteLineNo, m.noteLineHash, body); err != nil {
+						m.statusMsg = "save note: " + err.Error()
+					} else {
+						m.currentNotes = m.brain.NotesForFile(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile)
+						m.redrawDiff()
+					}
+				}
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.noteInput, cmd = m.noteInput.Update(msg)
+			return m, cmd
+		}
 		if m.view == viewDiff {
 			switch msg.String() {
 			case "ctrl+c", "q":
@@ -562,8 +648,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.rebuildPRItems()
 				}
 				return m, nil
+			case "j":
+				m.moveCursor(1)
+				return m, nil
+			case "k":
+				m.moveCursor(-1)
+				return m, nil
 			case "u":
-				// Unmark every current hunk.
 				m.currentMarks = map[string]bool{}
 				m.saveMarks()
 				m.redrawDiff()
@@ -571,6 +662,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.jumpToCurrentHunk()
 				m.statusMsg = "cleared marks on " + m.selectedFile
 				return m, nil
+			case "c":
+				lineNo := m.cursorFileLine()
+				if lineNo == 0 {
+					m.statusMsg = "cursor not on a file line"
+					return m, nil
+				}
+				m.noting = true
+				m.noteLineNo = lineNo
+				m.noteLineHash = m.cursorLineHash(lineNo)
+				m.noteInput.Reset()
+				return m, m.noteInput.Focus()
 			}
 			// Fall through to let the viewport handle scrolling keys.
 			var cmd tea.Cmd
@@ -680,24 +782,34 @@ func (m model) View() string {
 	case viewFiles:
 		body = m.files.View()
 	case viewDiff:
-		body = m.diff.View()
+		if m.noting {
+			// Shrink diff to make room for textarea.
+			m.diff.Height = m.height - 8
+			body = m.diff.View() + "\n" + m.noteInput.View()
+		} else {
+			body = m.diff.View()
+		}
 	}
 	footer := m.statusMsg
 	if footer == "" {
 		switch m.view {
 		case viewDiff:
-			marked := 0
-			for _, h := range m.currentHunks {
-				if m.currentMarks[h.Hash] {
-					marked++
+			if m.noting {
+				footer = fmt.Sprintf("line %d  ctrl+d: save  esc: cancel", m.noteLineNo)
+			} else {
+				marked := 0
+				for _, h := range m.currentHunks {
+					if m.currentMarks[h.Hash] {
+						marked++
+					}
 				}
+				total := len(m.currentHunks)
+				cur := m.hunkIdx + 1
+				if total == 0 {
+					cur = 0
+				}
+				footer = fmt.Sprintf("hunk %d/%d  marked %d/%d  ↑/↓: nav  j/k: cursor  space: toggle+next  m: mark all  c: note  u: unmark  h: back", cur, total, marked, total)
 			}
-			total := len(m.currentHunks)
-			cur := m.hunkIdx + 1
-			if total == 0 {
-				cur = 0
-			}
-			footer = fmt.Sprintf("hunk %d/%d  marked %d/%d  ↑/↓: nav  space: toggle+next  m: mark all  u: unmark  h: back", cur, total, marked, total)
 		default:
 			footer = "l/enter: open  h/esc: back  q: quit"
 		}
