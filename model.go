@@ -59,13 +59,17 @@ func (i prItem) Description() string { return "" }
 func (i prItem) FilterValue() string { return i.Title() }
 
 type fileItem struct {
-	fc        FileChange
-	status    FileStatus
-	noteCount int
+	fc         FileChange
+	status     FileStatus
+	noteCount  int
+	needsCatchUp bool // PR head moved since this file was last reviewed
 }
 
 func (i fileItem) Title() string {
 	s := fmt.Sprintf("%s %s  +%d -%d", i.status.Glyph(), i.fc.Path, i.fc.Additions, i.fc.Deletions)
+	if i.needsCatchUp {
+		s += "  ↻"
+	}
 	if i.noteCount > 0 {
 		s += fmt.Sprintf("  (%d notes)", i.noteCount)
 	}
@@ -108,6 +112,11 @@ type blobLoadedMsg struct {
 	content string
 	err     error
 }
+type catchUpLoadedMsg struct {
+	path  string
+	files []FileChange // delta files from compare API
+	err   error
+}
 
 // --- model ---
 
@@ -141,6 +150,11 @@ type model struct {
 	cursorLine   int      // output line the cursor is on
 	diffLines    []string // raw content lines for manual rendering in noting mode
 	blobContent  string   // full file content, empty until blob loads
+
+	// Catch-up diff state.
+	catchUpMode     bool   // true when showing only the delta since last review
+	catchUpOldHead  string // the head SHA we last reviewed at
+	catchUpPatch    string // the delta patch for the current file
 
 	// Note input state.
 	noting       bool
@@ -304,6 +318,17 @@ func (m *model) rebuildPRItems() {
 			} else {
 				it.summary = fmt.Sprintf("%d new", unseen)
 			}
+			// Check if any files need catch-up (PR head moved since last review).
+			reviewedHeads := m.brain.AllFileReviewedHeads(pr.Repo, pr.Number)
+			catchUpCount := 0
+			for _, f := range files {
+				if old := reviewedHeads[f.Path]; old != "" && old != pr.HeadSHA {
+					catchUpCount++
+				}
+			}
+			if catchUpCount > 0 {
+				it.summary += fmt.Sprintf(", %d ↻", catchUpCount)
+			}
 		}
 		if looked {
 			inProgress = append(inProgress, it)
@@ -347,11 +372,14 @@ func (m *model) rebuildFileItems() {
 		savedPath = sel.fc.Path
 	}
 	files := m.prFiles[prKey(m.selectedPR.Repo, m.selectedPR.Number)]
+	reviewedHeads := m.brain.AllFileReviewedHeads(m.selectedPR.Repo, m.selectedPR.Number)
 	var unseen, partial, seen []fileItem
 	for _, fc := range files {
 		status := m.brain.Status(m.selectedPR.Repo, m.selectedPR.Number, fc)
 		nc := m.brain.NoteCountForFile(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
-		fi := fileItem{fc: fc, status: status, noteCount: nc}
+		oldHead := reviewedHeads[fc.Path]
+		catchUp := oldHead != "" && oldHead != m.selectedPR.HeadSHA
+		fi := fileItem{fc: fc, status: status, noteCount: nc, needsCatchUp: catchUp}
 		switch status {
 		case StatusUnseen:
 			unseen = append(unseen, fi)
@@ -565,25 +593,55 @@ func (m *model) currentFile() (FileChange, bool) {
 
 // openFile loads a file into the diff view: parse hunks, seed marks from the
 // brain, show patch view immediately, then kick off blob fetch for full file.
+//
+// If the PR head has moved since this file was last reviewed, we enter catch-up
+// mode: fetch only the delta and show that instead of the full PR diff.
 func (m *model) openFile(fc FileChange) tea.Cmd {
 	m.selectedFile = fc.Path
 	m.view = viewDiff
 	m.blobContent = ""
+	m.catchUpMode = false
+	m.catchUpOldHead = ""
+	m.catchUpPatch = ""
+
+	// Check if this file was previously reviewed at an older head.
+	oldHead := m.brain.FileReviewedHead(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
+	needsCatchUp := oldHead != "" && oldHead != m.selectedPR.HeadSHA
+
 	m.currentHunks = parseHunks(fc.Patch)
 	m.currentMarks = m.brain.HunkMarks(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
 	m.currentNotes = m.brain.NotesForFile(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
 	m.hunkIdx = firstUnmarked(m.currentHunks, m.currentMarks)
 	m.redrawDiff()
 	m.jumpToCurrentHunk()
-	if fc.Blob == "" {
+
+	var cmds []tea.Cmd
+
+	if needsCatchUp {
+		m.catchUpOldHead = oldHead
+		m.statusMsg = fmt.Sprintf("loading catch-up diff %s..%s", shortSHA(oldHead), shortSHA(m.selectedPR.HeadSHA))
+		repo := m.selectedPR.Repo
+		newHead := m.selectedPR.HeadSHA
+		path := fc.Path
+		cmds = append(cmds, func() tea.Msg {
+			files, err := fetchCompare(repo, oldHead, newHead)
+			return catchUpLoadedMsg{path: path, files: files, err: err}
+		})
+	}
+
+	if fc.Blob != "" {
+		repo := m.selectedPR.Repo
+		sha := fc.Blob
+		cmds = append(cmds, func() tea.Msg {
+			content, err := fetchBlob(repo, sha)
+			return blobLoadedMsg{content: content, err: err}
+		})
+	}
+
+	if len(cmds) == 0 {
 		return nil
 	}
-	repo := m.selectedPR.Repo
-	sha := fc.Blob
-	return func() tea.Msg {
-		content, err := fetchBlob(repo, sha)
-		return blobLoadedMsg{content: content, err: err}
-	}
+	return tea.Batch(cmds...)
 }
 
 func firstUnmarked(hunks []Hunk, marks map[string]bool) int {
@@ -742,6 +800,12 @@ func (m *model) saveMarks() {
 	}
 	if err := m.brain.SetHunkMarks(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile, m.currentMarks); err != nil {
 		m.statusMsg = "save error: " + err.Error()
+		return
+	}
+	// Record the PR head SHA we're reviewing against so catch-up diffs
+	// know what version we last saw.
+	if m.selectedPR.HeadSHA != "" {
+		m.brain.SetFileReviewed(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile, m.selectedPR.HeadSHA)
 	}
 }
 
@@ -789,6 +853,42 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case catchUpLoadedMsg:
+		if msg.err != nil {
+			m.statusMsg = "catch-up: " + msg.err.Error()
+			return m, nil
+		}
+		// Only apply if we're still looking at the same file.
+		if m.view != viewDiff || m.selectedFile != msg.path {
+			return m, nil
+		}
+		// Find whether this file changed in the compare delta.
+		var deltaFC *FileChange
+		for _, f := range msg.files {
+			if f.Path == msg.path {
+				deltaFC = &f
+				break
+			}
+		}
+		if deltaFC == nil || deltaFC.Patch == "" {
+			// File didn't change since last review — auto-caught-up.
+			m.catchUpMode = false
+			m.statusMsg = fmt.Sprintf("✓ %s unchanged since %s — caught up", m.selectedFile, shortSHA(m.catchUpOldHead))
+			// Update the reviewed head to current so next visit is clean.
+			m.brain.SetFileReviewed(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile, m.selectedPR.HeadSHA)
+			return m, nil
+		}
+		// Switch to catch-up mode: show only the delta hunks.
+		m.catchUpMode = true
+		m.catchUpPatch = deltaFC.Patch
+		m.currentHunks = parseHunks(deltaFC.Patch)
+		m.currentMarks = m.brain.HunkMarks(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile)
+		m.hunkIdx = firstUnmarked(m.currentHunks, m.currentMarks)
+		m.statusMsg = fmt.Sprintf("catch-up: showing changes since %s  (d: full diff)", shortSHA(m.catchUpOldHead))
+		m.redrawDiff()
+		m.jumpToCurrentHunk()
+		return m, nil
+
 	case blobLoadedMsg:
 		if msg.err != nil {
 			m.statusMsg = "blob: " + msg.err.Error()
@@ -796,8 +896,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.view == viewDiff {
 			m.blobContent = msg.content
-			m.redrawDiff()
-			m.jumpToCurrentHunk()
+			// Don't redraw if we're in catch-up mode — keep showing the delta.
+			if !m.catchUpMode {
+				m.redrawDiff()
+				m.jumpToCurrentHunk()
+			}
 		}
 		return m, nil
 
@@ -924,6 +1027,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.hunkIdx = 0
 				m.jumpToCurrentHunk()
 				m.statusMsg = "cleared marks on " + m.selectedFile
+				return m, nil
+			case "d":
+				// Toggle between catch-up diff and full PR diff.
+				if m.catchUpOldHead == "" {
+					// No catch-up available — nothing to toggle.
+					return m, nil
+				}
+				fc, ok := m.currentFile()
+				if !ok {
+					return m, nil
+				}
+				if m.catchUpMode {
+					// Switch to full diff.
+					m.catchUpMode = false
+					m.currentHunks = parseHunks(fc.Patch)
+					m.currentMarks = m.brain.HunkMarks(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
+					m.hunkIdx = firstUnmarked(m.currentHunks, m.currentMarks)
+					m.statusMsg = "full diff  (d: catch-up diff)"
+				} else {
+					// Switch back to catch-up diff.
+					m.catchUpMode = true
+					m.currentHunks = parseHunks(m.catchUpPatch)
+					m.currentMarks = m.brain.HunkMarks(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
+					m.hunkIdx = firstUnmarked(m.currentHunks, m.currentMarks)
+					m.statusMsg = fmt.Sprintf("catch-up: changes since %s  (d: full diff)", shortSHA(m.catchUpOldHead))
+				}
+				m.redrawDiff()
+				m.jumpToCurrentHunk()
 				return m, nil
 			case "c":
 				lineNo := m.cursorFileLine()
@@ -1100,7 +1231,15 @@ func (m model) View() string {
 				if total == 0 {
 					cur = 0
 				}
-				footer = fmt.Sprintf("hunk %d/%d  marked %d/%d  ↑/↓: nav  j/k: cursor  space: toggle+next  m: mark all  c: note  u: unmark  h: back", cur, total, marked, total)
+				modeHint := ""
+				if m.catchUpOldHead != "" {
+					if m.catchUpMode {
+						modeHint = fmt.Sprintf("  [catch-up since %s]  d: full diff", shortSHA(m.catchUpOldHead))
+					} else {
+						modeHint = "  [full diff]  d: catch-up"
+					}
+				}
+				footer = fmt.Sprintf("hunk %d/%d  marked %d/%d%s  ↑/↓: nav  j/k: cursor  space: toggle+next  m: mark all  c: note  u: unmark  h: back", cur, total, marked, total, modeHint)
 			}
 		case viewFiles:
 			footer = "1: files  2: description  3: notes  l/enter: open  h/esc: back  q: quit"

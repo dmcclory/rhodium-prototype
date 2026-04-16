@@ -90,6 +90,14 @@ func LoadBrain() (*Brain, error) {
 			created_at TEXT    NOT NULL DEFAULT (datetime('now'))
 		);
 		CREATE INDEX IF NOT EXISTS idx_notes_file ON notes (pr_key, path);
+
+		CREATE TABLE IF NOT EXISTS file_reviews (
+			pr_key      TEXT NOT NULL,
+			path        TEXT NOT NULL,
+			head_sha    TEXT NOT NULL,
+			reviewed_at TEXT NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (pr_key, path)
+		);
 	`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate brain db: %w", err)
@@ -274,6 +282,45 @@ func (b *Brain) Status(repo string, pr int, fc FileChange) FileStatus {
 	default:
 		return StatusPartial
 	}
+}
+
+// SetFileReviewed records the PR head SHA at which a file was last reviewed.
+// Called alongside mark saves so we know what version the reviewer saw.
+func (b *Brain) SetFileReviewed(repo string, pr int, path, headSHA string) error {
+	key := prKey(repo, pr)
+	_, err := b.db.Exec(`
+		INSERT INTO file_reviews (pr_key, path, head_sha, reviewed_at)
+		VALUES (?, ?, ?, datetime('now'))
+		ON CONFLICT (pr_key, path) DO UPDATE SET head_sha = excluded.head_sha, reviewed_at = excluded.reviewed_at`,
+		key, path, headSHA)
+	return err
+}
+
+// FileReviewedHead returns the PR head SHA the reviewer last saw for this file,
+// or "" if the file has never been reviewed.
+func (b *Brain) FileReviewedHead(repo string, pr int, path string) string {
+	key := prKey(repo, pr)
+	var sha string
+	b.db.QueryRow(`SELECT head_sha FROM file_reviews WHERE pr_key = ? AND path = ?`, key, path).Scan(&sha)
+	return sha
+}
+
+// AllFileReviewedHeads returns every (path → head_sha) for a given PR.
+func (b *Brain) AllFileReviewedHeads(repo string, pr int) map[string]string {
+	key := prKey(repo, pr)
+	rows, err := b.db.Query(`SELECT path, head_sha FROM file_reviews WHERE pr_key = ?`, key)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var p, sha string
+		if rows.Scan(&p, &sha) == nil {
+			out[p] = sha
+		}
+	}
+	return out
 }
 
 func (b *Brain) UnseenCount(repo string, pr int, files []FileChange) int {

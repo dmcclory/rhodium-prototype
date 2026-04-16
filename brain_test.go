@@ -125,6 +125,68 @@ func TestBrainPRCache(t *testing.T) {
 	}
 }
 
+func TestBrainFileReviews(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
+
+	b, err := LoadBrain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	// No reviewed head initially.
+	if sha := b.FileReviewedHead("acme/web", 42, "src/main.go"); sha != "" {
+		t.Errorf("fresh: got %q, want empty", sha)
+	}
+
+	// Record a review.
+	if err := b.SetFileReviewed("acme/web", 42, "src/main.go", "abc123"); err != nil {
+		t.Fatal(err)
+	}
+	if sha := b.FileReviewedHead("acme/web", 42, "src/main.go"); sha != "abc123" {
+		t.Errorf("after set: got %q, want abc123", sha)
+	}
+
+	// Update to a new head — should overwrite.
+	if err := b.SetFileReviewed("acme/web", 42, "src/main.go", "def456"); err != nil {
+		t.Fatal(err)
+	}
+	if sha := b.FileReviewedHead("acme/web", 42, "src/main.go"); sha != "def456" {
+		t.Errorf("after update: got %q, want def456", sha)
+	}
+
+	// Different file should be independent.
+	if sha := b.FileReviewedHead("acme/web", 42, "other.go"); sha != "" {
+		t.Errorf("different file: got %q, want empty", sha)
+	}
+
+	// AllFileReviewedHeads returns all entries for the PR.
+	if err := b.SetFileReviewed("acme/web", 42, "other.go", "ghi789"); err != nil {
+		t.Fatal(err)
+	}
+	heads := b.AllFileReviewedHeads("acme/web", 42)
+	if len(heads) != 2 {
+		t.Fatalf("all heads: got %d, want 2", len(heads))
+	}
+	if heads["src/main.go"] != "def456" {
+		t.Errorf("all heads[src/main.go]: got %q, want def456", heads["src/main.go"])
+	}
+	if heads["other.go"] != "ghi789" {
+		t.Errorf("all heads[other.go]: got %q, want ghi789", heads["other.go"])
+	}
+
+	// Persists across reload.
+	b2, err := LoadBrain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b2.Close()
+	if sha := b2.FileReviewedHead("acme/web", 42, "src/main.go"); sha != "def456" {
+		t.Errorf("after reload: got %q, want def456", sha)
+	}
+}
+
 func TestBrainNotes(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))

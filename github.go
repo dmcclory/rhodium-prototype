@@ -100,6 +100,36 @@ func listPRFiles(repo string, number int) ([]FileChange, error) {
 	return files, nil
 }
 
+// fetchCompare returns the files that changed between two commits using the
+// GitHub compare API. Files not in the result haven't changed — they're
+// automatically caught up. The returned FileChanges include patches for only
+// the delta between base and head.
+func fetchCompare(repo, base, head string) ([]FileChange, error) {
+	out, err := exec.Command("gh", "api",
+		fmt.Sprintf("repos/%s/compare/%s...%s", repo, base, head),
+	).Output()
+	if err != nil {
+		return nil, fmt.Errorf("gh api compare %s %s...%s: %w", repo, base, head, err)
+	}
+	var result struct {
+		Files []ghAPIFile `json:"files"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		return nil, fmt.Errorf("parse compare json: %w", err)
+	}
+	files := make([]FileChange, 0, len(result.Files))
+	for _, it := range result.Files {
+		files = append(files, FileChange{
+			Path:      it.Filename,
+			Additions: it.Additions,
+			Deletions: it.Deletions,
+			Blob:      it.Sha,
+			Patch:     it.Patch,
+		})
+	}
+	return files, nil
+}
+
 func fetchBlob(repo, sha string) (string, error) {
 	out, err := exec.Command("gh", "api",
 		fmt.Sprintf("repos/%s/git/blobs/%s", repo, sha),
