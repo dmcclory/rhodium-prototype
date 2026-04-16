@@ -77,9 +77,9 @@ func LoadBrain() (*Brain, error) {
 			title    TEXT    NOT NULL,
 			author   TEXT    NOT NULL,
 			head_sha TEXT    NOT NULL,
+			body     TEXT    NOT NULL DEFAULT '',
 			PRIMARY KEY (repo, number)
 		);
-		DROP TABLE IF EXISTS notes;
 		CREATE TABLE IF NOT EXISTS notes (
 			id         INTEGER PRIMARY KEY AUTOINCREMENT,
 			pr_key     TEXT    NOT NULL,
@@ -146,7 +146,7 @@ func (b *Brain) SetHunkMarks(repo string, pr int, path string, marks map[string]
 }
 
 func (b *Brain) CachedPRs() []PR {
-	rows, err := b.db.Query(`SELECT repo, number, title, author, head_sha FROM pr_cache`)
+	rows, err := b.db.Query(`SELECT repo, number, title, author, head_sha, body FROM pr_cache`)
 	if err != nil {
 		return nil
 	}
@@ -154,7 +154,7 @@ func (b *Brain) CachedPRs() []PR {
 	var out []PR
 	for rows.Next() {
 		var p PR
-		if rows.Scan(&p.Repo, &p.Number, &p.Title, &p.Author, &p.HeadSHA) == nil {
+		if rows.Scan(&p.Repo, &p.Number, &p.Title, &p.Author, &p.HeadSHA, &p.Body) == nil {
 			out = append(out, p)
 		}
 	}
@@ -171,8 +171,8 @@ func (b *Brain) SetPRCache(prs []PR) error {
 		return err
 	}
 	for _, p := range prs {
-		if _, err := tx.Exec(`INSERT INTO pr_cache (repo, number, title, author, head_sha) VALUES (?, ?, ?, ?, ?)`,
-			p.Repo, p.Number, p.Title, p.Author, p.HeadSHA); err != nil {
+		if _, err := tx.Exec(`INSERT INTO pr_cache (repo, number, title, author, head_sha, body) VALUES (?, ?, ?, ?, ?, ?)`,
+			p.Repo, p.Number, p.Title, p.Author, p.HeadSHA, p.Body); err != nil {
 			return err
 		}
 	}
@@ -187,6 +187,39 @@ type Note struct {
 	LineHash  string
 	Body      string
 	CreatedAt string
+}
+
+func (b *Brain) NoteCountForPR(repo string, pr int) int {
+	key := prKey(repo, pr)
+	var count int
+	b.db.QueryRow(`SELECT COUNT(*) FROM notes WHERE pr_key = ?`, key).Scan(&count)
+	return count
+}
+
+func (b *Brain) NoteCountForFile(repo string, pr int, path string) int {
+	key := prKey(repo, pr)
+	var count int
+	b.db.QueryRow(`SELECT COUNT(*) FROM notes WHERE pr_key = ? AND path = ?`, key, path).Scan(&count)
+	return count
+}
+
+func (b *Brain) NotesForPR(repo string, pr int) []Note {
+	key := prKey(repo, pr)
+	rows, err := b.db.Query(
+		`SELECT id, pr_key, path, line_no, line_hash, body, created_at FROM notes WHERE pr_key = ? ORDER BY path, line_no, id`,
+		key)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []Note
+	for rows.Next() {
+		var n Note
+		if rows.Scan(&n.ID, &n.PRKey, &n.Path, &n.LineNo, &n.LineHash, &n.Body, &n.CreatedAt) == nil {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func (b *Brain) NotesForFile(repo string, pr int, path string) []Note {

@@ -14,12 +14,14 @@ type PR struct {
 	Title   string
 	Author  string
 	HeadSHA string
+	Body    string
 }
 
 type prListItem struct {
 	Number     int    `json:"number"`
 	Title      string `json:"title"`
 	HeadRefOid string `json:"headRefOid"`
+	Body       string `json:"body"`
 	Author     struct {
 		Login string `json:"login"`
 	} `json:"author"`
@@ -28,7 +30,7 @@ type prListItem struct {
 func listPRs(repo string) ([]PR, error) {
 	out, err := exec.Command("gh", "pr", "list",
 		"--repo", repo,
-		"--json", "number,title,author,headRefOid",
+		"--json", "number,title,author,headRefOid,body",
 		"--limit", "50",
 	).Output()
 	if err != nil {
@@ -48,6 +50,7 @@ func listPRs(repo string) ([]PR, error) {
 			Title:   it.Title,
 			Author:  it.Author.Login,
 			HeadSHA: it.HeadRefOid,
+			Body:    it.Body,
 		})
 	}
 	return prs, nil

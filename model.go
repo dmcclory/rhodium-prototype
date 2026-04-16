@@ -25,30 +25,51 @@ const (
 	viewDiff
 )
 
+type fileTab int
+
+const (
+	tabFiles fileTab = iota
+	tabDescription
+	tabNotes
+)
+
 // --- list items ---
 
 type prItem struct {
-	pr      PR
-	summary string
+	pr        PR
+	summary   string
+	noteCount int
 }
 
 func (i prItem) Title() string {
 	head := fmt.Sprintf("%s#%d  %s  @%s", i.pr.Repo, i.pr.Number, i.pr.Title, i.pr.Author)
-	if i.summary == "" {
-		return head
+	var parts []string
+	if i.summary != "" {
+		parts = append(parts, i.summary)
 	}
-	return head + "  (" + i.summary + ")"
+	if i.noteCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d notes", i.noteCount))
+	}
+	if len(parts) > 0 {
+		head += "  (" + strings.Join(parts, ", ") + ")"
+	}
+	return head
 }
 func (i prItem) Description() string { return "" }
 func (i prItem) FilterValue() string { return i.Title() }
 
 type fileItem struct {
-	fc     FileChange
-	status FileStatus
+	fc        FileChange
+	status    FileStatus
+	noteCount int
 }
 
 func (i fileItem) Title() string {
-	return fmt.Sprintf("%s %s  +%d -%d", i.status.Glyph(), i.fc.Path, i.fc.Additions, i.fc.Deletions)
+	s := fmt.Sprintf("%s %s  +%d -%d", i.status.Glyph(), i.fc.Path, i.fc.Additions, i.fc.Deletions)
+	if i.noteCount > 0 {
+		s += fmt.Sprintf("  (%d notes)", i.noteCount)
+	}
+	return s
 }
 func (i fileItem) Description() string { return "" }
 func (i fileItem) FilterValue() string { return i.fc.Path }
@@ -101,6 +122,9 @@ type model struct {
 	files list.Model
 	diff  viewport.Model
 
+	fileTab      fileTab
+	infoVP       viewport.Model // for description / notes tabs
+
 	allPRs       []PR
 	freshKeys    map[string]bool         // keys confirmed still open by a repo listing
 	prFiles      map[string][]FileChange // prKey → files
@@ -114,8 +138,9 @@ type model struct {
 	hunkLines    []int
 	lineMap      []int // output line → new-file line number (0 = non-file line)
 	hunkIdx      int
-	cursorLine   int    // output line the cursor is on
-	blobContent  string // full file content, empty until blob loads
+	cursorLine   int      // output line the cursor is on
+	diffLines    []string // raw content lines for manual rendering in noting mode
+	blobContent  string   // full file content, empty until blob loads
 
 	// Note input state.
 	noting       bool
@@ -141,6 +166,7 @@ func newModel(cfg *Config, brain *Brain) model {
 	fileList.Title = "Files"
 
 	vp := viewport.New(0, 0)
+	infoVP := viewport.New(0, 0)
 
 	ti := textarea.New()
 	ti.Placeholder = "Write a note... (ctrl+d to save, esc to cancel)"
@@ -155,6 +181,7 @@ func newModel(cfg *Config, brain *Brain) model {
 		files:   fileList,
 		diff:    vp,
 		noteInput: ti,
+		infoVP:    infoVP,
 		prFiles:   map[string][]FileChange{},
 		freshKeys: map[string]bool{},
 	}
@@ -265,7 +292,7 @@ func (m *model) rebuildPRItems() {
 
 	var inProgress, untouched []prItem
 	for _, pr := range m.allPRs {
-		it := prItem{pr: pr}
+		it := prItem{pr: pr, noteCount: m.brain.NoteCountForPR(pr.Repo, pr.Number)}
 		// A PR is "in progress" if the brain has any marks for it, even
 		// before we've fetched its file list. This keeps already-touched
 		// PRs from popping between buckets during startup prefetch.
@@ -320,28 +347,43 @@ func (m *model) rebuildFileItems() {
 		savedPath = sel.fc.Path
 	}
 	files := m.prFiles[prKey(m.selectedPR.Repo, m.selectedPR.Number)]
-	var inProgress, unseen []fileItem
+	var unseen, partial, seen []fileItem
 	for _, fc := range files {
 		status := m.brain.Status(m.selectedPR.Repo, m.selectedPR.Number, fc)
-		fi := fileItem{fc: fc, status: status}
-		if status == StatusUnseen {
+		nc := m.brain.NoteCountForFile(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
+		fi := fileItem{fc: fc, status: status, noteCount: nc}
+		switch status {
+		case StatusUnseen:
 			unseen = append(unseen, fi)
-		} else {
-			inProgress = append(inProgress, fi)
+		case StatusPartial:
+			partial = append(partial, fi)
+		case StatusSeen:
+			seen = append(seen, fi)
 		}
 	}
 	var items []list.Item
-	if len(inProgress) > 0 {
+	needSep := false
+	if len(partial) > 0 {
 		items = append(items, sectionItem{label: "── in progress ──"})
-		for _, fi := range inProgress {
+		for _, fi := range partial {
 			items = append(items, fi)
 		}
+		needSep = true
 	}
 	if len(unseen) > 0 {
-		if len(inProgress) > 0 {
+		if needSep {
 			items = append(items, sectionItem{label: "── unseen ──"})
 		}
 		for _, fi := range unseen {
+			items = append(items, fi)
+		}
+		needSep = true
+	}
+	if len(seen) > 0 {
+		if needSep {
+			items = append(items, sectionItem{label: "── seen ──"})
+		}
+		for _, fi := range seen {
 			items = append(items, fi)
 		}
 	}
@@ -354,6 +396,159 @@ func (m *model) rebuildFileItems() {
 			}
 		}
 	}
+}
+
+var (
+	tabActiveStyle   = lipgloss.NewStyle().Bold(true).Underline(true)
+	tabInactiveStyle = lipgloss.NewStyle().Faint(true)
+)
+
+func (m *model) tabBar() string {
+	tabs := []struct {
+		label string
+		t     fileTab
+	}{
+		{"[1] Files", tabFiles},
+		{"[2] Description", tabDescription},
+		{"[3] Notes", tabNotes},
+	}
+	var parts []string
+	for _, tab := range tabs {
+		if tab.t == m.fileTab {
+			parts = append(parts, tabActiveStyle.Render(tab.label))
+		} else {
+			parts = append(parts, tabInactiveStyle.Render(tab.label))
+		}
+	}
+	return strings.Join(parts, "  ") + "\n"
+}
+
+func (m *model) rebuildInfoVP() {
+	if m.selectedPR == nil {
+		return
+	}
+	var content string
+	switch m.fileTab {
+	case tabDescription:
+		body := m.selectedPR.Body
+		if body == "" {
+			body = "(no description)"
+		}
+		content = fmt.Sprintf("%s#%d  %s  @%s\n\n%s",
+			m.selectedPR.Repo, m.selectedPR.Number, m.selectedPR.Title, m.selectedPR.Author, body)
+	case tabNotes:
+		notes := m.brain.NotesForPR(m.selectedPR.Repo, m.selectedPR.Number)
+		if len(notes) == 0 {
+			content = "(no notes)"
+		} else {
+			key := prKey(m.selectedPR.Repo, m.selectedPR.Number)
+			fileLinesCache := map[string][]string{}
+			getFileLines := func(path string) []string {
+				if cached, ok := fileLinesCache[path]; ok {
+					return cached
+				}
+				lines := m.patchNewFileLines(key, path)
+				fileLinesCache[path] = lines
+				return lines
+			}
+
+			var b strings.Builder
+			curPath := ""
+			for _, n := range notes {
+				if n.Path != curPath {
+					if curPath != "" {
+						b.WriteByte('\n')
+					}
+					curPath = n.Path
+					b.WriteString(lipgloss.NewStyle().Bold(true).Render(curPath) + "\n")
+				}
+				// Context lines around the note.
+				fLines := getFileLines(n.Path)
+				idx := n.LineNo - 1
+				ctxStart := idx - 2
+				if ctxStart < 0 {
+					ctxStart = 0
+				}
+				ctxEnd := idx + 3
+				if ctxEnd > len(fLines) {
+					ctxEnd = len(fLines)
+				}
+				for i := ctxStart; i < ctxEnd; i++ {
+					lineStr := fmt.Sprintf("  %4d  %s", i+1, fLines[i])
+					if i == idx {
+						lineStr = lipgloss.NewStyle().Bold(true).Render(lineStr)
+					} else {
+						lineStr = lipgloss.NewStyle().Faint(true).Render(lineStr)
+					}
+					b.WriteString(lineStr + "\n")
+				}
+				b.WriteString(noteStyle.Render("  "+strings.Repeat(" ", 4)+"  RH: "+n.Body) + "\n")
+			}
+			content = b.String()
+		}
+	}
+	m.infoVP.SetContent(content)
+	m.infoVP.GotoTop()
+}
+
+// patchNewFileLines reconstructs the new-file lines visible in a patch's hunks.
+// Returns a sparse slice indexed by 1-based line number. Lines not covered by
+// any hunk are empty strings (best effort — we may not have the full file).
+func (m *model) patchNewFileLines(key, path string) []string {
+	files := m.prFiles[key]
+	var patch string
+	for _, f := range files {
+		if f.Path == path {
+			patch = f.Patch
+			break
+		}
+	}
+	if patch == "" {
+		return nil
+	}
+	hunks := parseHunks(patch)
+	// Find max line to size the slice.
+	maxLine := 0
+	for _, h := range hunks {
+		r := parseHunkRange(h.Header)
+		end := r.newStart + r.newCount
+		if end > maxLine {
+			maxLine = end
+		}
+	}
+	lines := make([]string, maxLine+1)
+	for _, h := range hunks {
+		r := parseHunkRange(h.Header)
+		cur := r.newStart
+		for _, line := range h.BodyLines {
+			if len(line) == 0 {
+				if cur < len(lines) {
+					lines[cur] = ""
+				}
+				cur++
+				continue
+			}
+			switch line[0] {
+			case '-':
+				// deleted from old file, not in new
+			case '+':
+				if cur < len(lines) {
+					lines[cur] = line[1:]
+				}
+				cur++
+			default:
+				if cur < len(lines) {
+					text := line
+					if len(text) > 0 && text[0] == ' ' {
+						text = text[1:]
+					}
+					lines[cur] = text
+				}
+				cur++
+			}
+		}
+	}
+	return lines
 }
 
 func (m *model) currentFile() (FileChange, bool) {
@@ -415,6 +610,7 @@ func (m *model) redrawDiff() {
 		body, lines, lmap = renderHunks(m.currentHunks, m.currentMarks, m.hunkIdx, m.currentNotes, m.cursorLine)
 	}
 	m.diff.SetContent(body)
+	m.diffLines = strings.Split(body, "\n")
 	m.hunkLines = lines
 	m.lineMap = lmap
 }
@@ -423,7 +619,9 @@ func (m *model) jumpToCurrentHunk() {
 	if m.hunkIdx < 0 || m.hunkIdx >= len(m.hunkLines) {
 		return
 	}
-	m.diff.SetYOffset(m.hunkLines[m.hunkIdx])
+	target := m.hunkLines[m.hunkIdx]
+	m.cursorLine = target
+	m.diff.SetYOffset(target)
 }
 
 func (m *model) allHunksMarked() bool {
@@ -433,6 +631,67 @@ func (m *model) allHunksMarked() bool {
 		}
 	}
 	return len(m.currentHunks) > 0
+}
+
+func (m *model) renderNotingView() string {
+	_, v := appStyle.GetFrameSize()
+	totalH := m.height - v - 1 // minus footer
+	taHeight := m.noteInput.Height() + 2
+	diffH := totalH - taHeight
+
+	contentLines := m.diffLines
+
+	// Where does the cursor sit relative to the current scroll?
+	screenPos := m.cursorLine - m.diff.YOffset
+	yOff := m.diff.YOffset
+
+	// If cursor is too close to the bottom, scroll up to make room for the
+	// textarea right under the cursor line.
+	maxScreenPos := diffH - taHeight - 1
+	if maxScreenPos < 0 {
+		maxScreenPos = 0
+	}
+	if screenPos > maxScreenPos {
+		yOff = m.cursorLine - maxScreenPos
+		screenPos = maxScreenPos
+	}
+	if yOff < 0 {
+		yOff = 0
+	}
+
+	// Lines above textarea: from yOff to cursor line (inclusive).
+	aboveCount := screenPos + 1
+	// Lines below textarea fill the rest.
+	belowCount := diffH - aboveCount
+
+	var b strings.Builder
+	// Above section.
+	for i := 0; i < aboveCount; i++ {
+		idx := yOff + i
+		if idx < len(contentLines) {
+			b.WriteString(contentLines[idx])
+		}
+		b.WriteByte('\n')
+	}
+	// Textarea.
+	b.WriteString(m.noteInput.View())
+	b.WriteByte('\n')
+	// Below section.
+	belowStart := yOff + aboveCount
+	for i := 0; i < belowCount; i++ {
+		idx := belowStart + i
+		if idx < len(contentLines) {
+			b.WriteString(contentLines[idx])
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func (m *model) restoreDiffSize() {
+	h, v := appStyle.GetFrameSize()
+	m.diff.Width = m.width - h
+	m.diff.Height = m.height - v - 1
 }
 
 func (m *model) moveCursor(delta int) {
@@ -497,6 +756,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.files.SetSize(listW, listH)
 		m.diff.Width = listW
 		m.diff.Height = listH
+		m.infoVP.Width = listW
+		m.infoVP.Height = listH
 		return m, nil
 
 	case prsLoadedMsg:
@@ -563,11 +824,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc":
 				m.noting = false
 				m.noteInput.Blur()
+				m.restoreDiffSize()
 				return m, nil
 			case "ctrl+d":
 				body := strings.TrimSpace(m.noteInput.Value())
 				m.noting = false
 				m.noteInput.Blur()
+				m.restoreDiffSize()
 				if body != "" {
 					if err := m.brain.SaveNote(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile, m.noteLineNo, m.noteLineHash, body); err != nil {
 						m.statusMsg = "save note: " + err.Error()
@@ -680,6 +943,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// Tab switching in files view.
+		if m.view == viewFiles && !listIsFiltering(m) {
+			switch msg.String() {
+			case "1":
+				m.fileTab = tabFiles
+				return m, nil
+			case "2":
+				m.fileTab = tabDescription
+				m.rebuildInfoVP()
+				return m, nil
+			case "3":
+				m.fileTab = tabNotes
+				m.rebuildInfoVP()
+				return m, nil
+			}
+		}
+
 		// Non-diff views. vim-style h/l drill out/in as aliases for esc/enter.
 		// Skip h/l while a filter is active so they're still typeable.
 		switch msg.String() {
@@ -692,6 +972,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			if m.view == viewFiles {
+				m.fileTab = tabFiles
 				m.view = viewPRs
 				return m, nil
 			}
@@ -717,6 +998,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, loadFilesCmd(pr)
 				}
 			case viewFiles:
+				if m.fileTab != tabFiles {
+					break
+				}
 				if it, ok := m.files.SelectedItem().(fileItem); ok {
 					cmd := m.openFile(it.fc)
 					return m, cmd
@@ -732,9 +1016,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.prs, cmd = m.prs.Update(msg)
 		skipSectionHeaders(&m.prs, prev)
 	case viewFiles:
-		prev := m.files.Index()
-		m.files, cmd = m.files.Update(msg)
-		skipSectionHeaders(&m.files, prev)
+		if m.fileTab != tabFiles {
+			m.infoVP, cmd = m.infoVP.Update(msg)
+		} else {
+			prev := m.files.Index()
+			m.files, cmd = m.files.Update(msg)
+			skipSectionHeaders(&m.files, prev)
+		}
 	case viewDiff:
 		m.diff, cmd = m.diff.Update(msg)
 	}
@@ -780,12 +1068,16 @@ func (m model) View() string {
 	case viewPRs:
 		body = m.prs.View()
 	case viewFiles:
-		body = m.files.View()
+		body = m.tabBar()
+		switch m.fileTab {
+		case tabFiles:
+			body += m.files.View()
+		case tabDescription, tabNotes:
+			body += m.infoVP.View()
+		}
 	case viewDiff:
 		if m.noting {
-			// Shrink diff to make room for textarea.
-			m.diff.Height = m.height - 8
-			body = m.diff.View() + "\n" + m.noteInput.View()
+			body = m.renderNotingView()
 		} else {
 			body = m.diff.View()
 		}
@@ -810,6 +1102,8 @@ func (m model) View() string {
 				}
 				footer = fmt.Sprintf("hunk %d/%d  marked %d/%d  ↑/↓: nav  j/k: cursor  space: toggle+next  m: mark all  c: note  u: unmark  h: back", cur, total, marked, total)
 			}
+		case viewFiles:
+			footer = "1: files  2: description  3: notes  l/enter: open  h/esc: back  q: quit"
 		default:
 			footer = "l/enter: open  h/esc: back  q: quit"
 		}
