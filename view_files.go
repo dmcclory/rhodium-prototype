@@ -8,14 +8,34 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+const descPaneHeight = 8
+
+// sizeFilesView splits available height between the file list and description pane.
+func (m *model) sizeFilesView(w, totalH int) {
+	// 1 line for tab bar, 1 line for the separator.
+	descH := descPaneHeight
+	filesH := totalH - descH - 2
+	if filesH < 4 {
+		filesH = 4
+		descH = totalH - filesH - 2
+	}
+	m.files.SetSize(w, filesH)
+	m.descVP.Width = w
+	m.descVP.Height = descH
+}
+
 func (m model) viewFiles() string {
 	body := m.tabBar()
 	switch m.fileTab {
 	case tabFiles:
 		body += m.files.View()
-	case tabDescription, tabNotes:
+	case tabNotes:
 		body += m.infoVP.View()
+		return body // notes tab takes the full space, no description pane
 	}
+	// Description pane below the file list.
+	body += "\n" + lipgloss.NewStyle().Faint(true).Render(strings.Repeat("─", m.descVP.Width)) + "\n"
+	body += m.descVP.View()
 	return body
 }
 
@@ -93,9 +113,7 @@ func (m *model) tabBar() string {
 		t     fileTab
 	}{
 		{"[1] Files", tabFiles},
-		{"[2] Description", tabDescription},
-		{"[3] Notes", tabNotes},
-		{"[4] Extra!", tabNotes},
+		{"[2] Notes", tabNotes},
 	}
 	var parts []string
 	for _, tab := range tabs {
@@ -108,19 +126,27 @@ func (m *model) tabBar() string {
 	return strings.Join(parts, "  ") + "\n"
 }
 
+// rebuildDescVP populates the always-visible description pane.
+func (m *model) rebuildDescVP() {
+	if m.selectedPR == nil {
+		return
+	}
+	body := m.selectedPR.Body
+	if body == "" {
+		body = "(no description)"
+	}
+	content := fmt.Sprintf("%s#%d  %s  @%s\n\n%s",
+		m.selectedPR.Repo, m.selectedPR.Number, m.selectedPR.Title, m.selectedPR.Author, body)
+	m.descVP.SetContent(content)
+	m.descVP.GotoTop()
+}
+
 func (m *model) rebuildInfoVP() {
 	if m.selectedPR == nil {
 		return
 	}
 	var content string
 	switch m.fileTab {
-	case tabDescription:
-		body := m.selectedPR.Body
-		if body == "" {
-			body = "(no description sad face)"
-		}
-		content = fmt.Sprintf("%s#%d  %s  @%s\n\n%s",
-			m.selectedPR.Repo, m.selectedPR.Number, m.selectedPR.Title, m.selectedPR.Author, body)
 	case tabNotes:
 		notes := m.brain.NotesForPR(m.selectedPR.Repo, m.selectedPR.Number)
 		if len(notes) == 0 {

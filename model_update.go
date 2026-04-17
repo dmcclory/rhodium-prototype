@@ -169,10 +169,6 @@ func (m *model) updateListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.fileTab = tabFiles
 			return m, nil
 		case "2":
-			m.fileTab = tabDescription
-			m.rebuildInfoVP()
-			return m, nil
-		case "3":
 			m.fileTab = tabNotes
 			m.rebuildInfoVP()
 			return m, nil
@@ -221,6 +217,7 @@ func (m *model) updateListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.selectedPR = &pr
 				m.catchUpSession = m.brain.ActiveCatchUp(pr.Repo, pr.Number)
 				m.view = viewFiles
+				m.rebuildDescVP()
 				key := prKey(pr.Repo, pr.Number)
 				if _, cached := m.prFiles[key]; cached {
 					m.rebuildFileItems()

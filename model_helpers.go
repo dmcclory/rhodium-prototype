@@ -81,7 +81,7 @@ func (m model) footer() string {
 		}
 		return fmt.Sprintf("hunk %d/%d  marked %d/%d%s  ↑/↓: nav  j/k: cursor  space: toggle+next  m: mark all  c: note  u: unmark  h: back", cur, total, marked, total, modeHint)
 	case viewFiles:
-		return "1: files  2: description  3: notes  l/enter: open  h/esc: back  q: quit"
+		return "1: files  2: notes  l/enter: open  h/esc: back  q: quit"
 	default:
 		return "l/enter: open  s: scrutiny  h/esc: back  q: quit"
 	}

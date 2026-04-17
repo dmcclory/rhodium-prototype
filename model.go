@@ -29,7 +29,8 @@ type model struct {
 	diff  viewport.Model
 
 	fileTab      fileTab
-	infoVP       viewport.Model // for description / notes tabs
+	infoVP       viewport.Model // for notes tab
+	descVP       viewport.Model // always-visible PR description pane
 
 	allPRs       []PR
 	freshKeys    map[string]bool         // keys confirmed still open by a repo listing
@@ -81,6 +82,7 @@ func newModel(cfg *Config, brain *Brain) model {
 
 	vp := viewport.New(0, 0)
 	infoVP := viewport.New(0, 0)
+	descVP := viewport.New(0, 0)
 
 	ti := textarea.New()
 	ti.Placeholder = "Write a note... (ctrl+d to save, esc to cancel)"
@@ -96,6 +98,7 @@ func newModel(cfg *Config, brain *Brain) model {
 		diff:    vp,
 		noteInput: ti,
 		infoVP:    infoVP,
+		descVP:    descVP,
 		prFiles:   map[string][]FileChange{},
 		freshKeys: map[string]bool{},
 	}
@@ -128,7 +131,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h, v := appStyle.GetFrameSize()
 		listW, listH := msg.Width-h, msg.Height-v-1
 		m.prs.SetSize(listW, listH)
-		m.files.SetSize(listW, listH)
+		m.sizeFilesView(listW, listH)
 		m.diff.Width = listW
 		m.diff.Height = listH
 		m.infoVP.Width = listW

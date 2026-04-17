@@ -19,7 +19,6 @@ type fileTab int
 
 const (
 	tabFiles fileTab = iota
-	tabDescription
 	tabNotes
 )
 
