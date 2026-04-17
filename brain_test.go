@@ -190,6 +190,124 @@ func TestBrainFileReviews(t *testing.T) {
 	}
 }
 
+func TestBrainScrutiny(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
+
+	b, err := LoadBrain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	// Not scrutinized by default.
+	if b.IsScrutinized("acme/web", 42) {
+		t.Error("fresh: should not be scrutinized")
+	}
+
+	// Toggle on.
+	if err := b.SetScrutiny("acme/web", 42, true); err != nil {
+		t.Fatal(err)
+	}
+	if !b.IsScrutinized("acme/web", 42) {
+		t.Error("after set: should be scrutinized")
+	}
+
+	// Idempotent.
+	if err := b.SetScrutiny("acme/web", 42, true); err != nil {
+		t.Fatal(err)
+	}
+
+	// Toggle off.
+	if err := b.SetScrutiny("acme/web", 42, false); err != nil {
+		t.Fatal(err)
+	}
+	if b.IsScrutinized("acme/web", 42) {
+		t.Error("after unset: should not be scrutinized")
+	}
+
+	// Different PR is independent.
+	b.SetScrutiny("acme/web", 99, true)
+	if b.IsScrutinized("acme/web", 42) {
+		t.Error("PR 42 should not be affected by PR 99")
+	}
+	if !b.IsScrutinized("acme/web", 99) {
+		t.Error("PR 99 should be scrutinized")
+	}
+}
+
+func TestBrainCatchUpSessions(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
+
+	b, err := LoadBrain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	// No active session initially.
+	if s := b.ActiveCatchUp("acme/web", 42); s != nil {
+		t.Fatal("fresh: should have no active session")
+	}
+
+	// Create a session.
+	session, err := b.CreateCatchUp("acme/web", 42, "oldHead", "newHead", "oldBase", "newBase", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.FilesTotal != 3 || session.FilesDone != 0 {
+		t.Errorf("new session: total=%d done=%d", session.FilesTotal, session.FilesDone)
+	}
+
+	// Should be active.
+	active := b.ActiveCatchUp("acme/web", 42)
+	if active == nil {
+		t.Fatal("should have active session")
+	}
+	if active.ID != session.ID {
+		t.Errorf("active session ID = %d, want %d", active.ID, session.ID)
+	}
+
+	// Advance 2 files.
+	b.CatchUpAdvanceFile(session.ID)
+	b.CatchUpAdvanceFile(session.ID)
+	active = b.ActiveCatchUp("acme/web", 42)
+	if active == nil || active.FilesDone != 2 {
+		t.Fatalf("after 2 advances: got %+v", active)
+	}
+
+	// Advance the last file — should auto-complete.
+	b.CatchUpAdvanceFile(session.ID)
+	active = b.ActiveCatchUp("acme/web", 42)
+	if active != nil {
+		t.Error("after completing all files: should have no active session")
+	}
+
+	// AllActiveCatchUps should be empty.
+	if all := b.AllActiveCatchUps(); len(all) != 0 {
+		t.Errorf("AllActiveCatchUps: got %d, want 0", len(all))
+	}
+
+	// Create another session — completing it manually.
+	s2, _ := b.CreateCatchUp("acme/web", 42, "h1", "h2", "b1", "b2", 5)
+	b.CompleteCatchUp(s2.ID)
+	if s := b.ActiveCatchUp("acme/web", 42); s != nil {
+		t.Error("after manual complete: should have no active session")
+	}
+
+	// Creating a new session auto-completes the old one.
+	b.CreateCatchUp("acme/web", 42, "a", "b", "c", "d", 2)
+	b.CreateCatchUp("acme/web", 42, "b", "c", "d", "e", 3)
+	all := b.AllActiveCatchUps()
+	if len(all) != 1 {
+		t.Fatalf("after double create: got %d active sessions, want 1", len(all))
+	}
+	if all[0].FilesTotal != 3 {
+		t.Errorf("latest session total = %d, want 3", all[0].FilesTotal)
+	}
+}
+
 func TestBrainNotes(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))

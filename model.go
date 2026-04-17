@@ -36,13 +36,17 @@ const (
 // --- list items ---
 
 type prItem struct {
-	pr        PR
-	summary   string
-	noteCount int
+	pr          PR
+	summary     string
+	noteCount   int
+	scrutinized bool
 }
 
 func (i prItem) Title() string {
 	head := fmt.Sprintf("%s#%d  %s  @%s", i.pr.Repo, i.pr.Number, i.pr.Title, i.pr.Author)
+	if i.scrutinized {
+		head = "[S] " + head
+	}
 	var parts []string
 	if i.summary != "" {
 		parts = append(parts, i.summary)
@@ -163,11 +167,12 @@ type model struct {
 	blobContent  string   // full file content, empty until blob loads
 
 	// Catch-up diff state.
-	catchUpMode     bool   // true when showing only the delta since last review
-	catchUpOldHead  string // the head SHA we last reviewed at (f1)
-	catchUpOldBase  string // the base SHA we last reviewed at (b1)
-	catchUpClass    Class  // diff4 classification of the catch-up
-	catchUpPatch    string // the delta patch for the current file
+	catchUpMode     bool             // true when showing only the delta since last review
+	catchUpOldHead  string           // the head SHA we last reviewed at (f1)
+	catchUpOldBase  string           // the base SHA we last reviewed at (b1)
+	catchUpClass    Class            // diff4 classification of the catch-up
+	catchUpPatch    string           // the delta patch for the current file
+	catchUpSession  *CatchUpSession  // active catch-up session for current PR
 
 	// Note input state.
 	noting       bool
@@ -255,8 +260,8 @@ func loadFilesCmd(pr PR) tea.Cmd {
 
 // autoAdvanceCmd checks each file in a PR for implicit review eligibility.
 // For files where the reviewer has marks but the PR hasn't changed since their
-// last review (b1==b2, f1==f2), it auto-advances the brain state. Runs in the
-// background so the UI stays responsive.
+// last review (b1==b2, f1==f2), it auto-advances the brain state. Also creates
+// a catch-up session if there are files needing catch-up.
 func autoAdvanceCmd(brain *Brain, pr PR, files []FileChange) tea.Cmd {
 	return func() tea.Msg {
 		states := brain.AllFileReviewedStates(pr.Repo, pr.Number)
@@ -264,38 +269,62 @@ func autoAdvanceCmd(brain *Brain, pr PR, files []FileChange) tea.Cmd {
 			return autoAdvanceMsg{prKey: prKey(pr.Repo, pr.Number)}
 		}
 
-		// For the no-rebase fast path (b1==b2), we can classify without
-		// fetching file content — just compare SHAs.
-		var advanced []string
+		// Count files needing catch-up (reviewed at a different head/base).
+		var needsCatchUp int
 		for _, fc := range files {
 			s, ok := states[fc.Path]
 			if !ok || s.HeadSHA == "" {
-				continue // never reviewed
-			}
-			if s.HeadSHA == pr.HeadSHA && s.BaseSHA == pr.BaseSHA {
-				continue // already current
-			}
-
-			// Check if base changed (rebase). If so, we'd need to fetch
-			// content at all 4 corners — skip auto-advance for now.
-			if s.BaseSHA != pr.BaseSHA && s.BaseSHA != "" {
 				continue
 			}
+			if s.HeadSHA != pr.HeadSHA || s.BaseSHA != pr.BaseSHA {
+				needsCatchUp++
+			}
+		}
 
-			// No rebase (b1==b2). Check if the file's hunk hashes changed.
-			// If the current hunks still match the old marks, the file
-			// content is effectively the same for review purposes.
+		// Create a catch-up session if there are files to catch up on
+		// and no active session already exists for this head.
+		if needsCatchUp > 0 {
+			existing := brain.ActiveCatchUp(pr.Repo, pr.Number)
+			if existing == nil || existing.NewHead != pr.HeadSHA {
+				// Find a representative old head (from any reviewed file).
+				var oldHead, oldBase string
+				for _, s := range states {
+					if s.HeadSHA != "" {
+						oldHead = s.HeadSHA
+						oldBase = s.BaseSHA
+						break
+					}
+				}
+				brain.CreateCatchUp(pr.Repo, pr.Number, oldHead, pr.HeadSHA, oldBase, pr.BaseSHA, needsCatchUp)
+			}
+		}
+
+		// Auto-advance files that haven't actually changed.
+		var advanced []string
+		session := brain.ActiveCatchUp(pr.Repo, pr.Number)
+		for _, fc := range files {
+			s, ok := states[fc.Path]
+			if !ok || s.HeadSHA == "" {
+				continue
+			}
+			if s.HeadSHA == pr.HeadSHA && s.BaseSHA == pr.BaseSHA {
+				continue
+			}
+			if s.BaseSHA != pr.BaseSHA && s.BaseSHA != "" {
+				continue // rebase — skip auto-advance
+			}
+
 			hunks := parseHunks(fc.Patch)
 			marks := brain.HunkMarks(pr.Repo, pr.Number, fc.Path)
 			if len(hunks) == 0 {
-				// No hunks = no diff = auto-advance.
 				brain.SetFileReviewed(pr.Repo, pr.Number, fc.Path, pr.HeadSHA, pr.BaseSHA)
 				advanced = append(advanced, fc.Path)
+				if session != nil {
+					brain.CatchUpAdvanceFile(session.ID)
+				}
 				continue
 			}
 
-			// If all current hunks are already marked (their content hashes
-			// match what the reviewer saw), auto-advance.
 			allMarked := true
 			for _, h := range hunks {
 				if !marks[h.Hash] {
@@ -306,6 +335,9 @@ func autoAdvanceCmd(brain *Brain, pr PR, files []FileChange) tea.Cmd {
 			if allMarked {
 				brain.SetFileReviewed(pr.Repo, pr.Number, fc.Path, pr.HeadSHA, pr.BaseSHA)
 				advanced = append(advanced, fc.Path)
+				if session != nil {
+					brain.CatchUpAdvanceFile(session.ID)
+				}
 			}
 		}
 		return autoAdvanceMsg{prKey: prKey(pr.Repo, pr.Number), advancedFiles: advanced}
@@ -378,7 +410,7 @@ func (m *model) rebuildPRItems() {
 
 	var inProgress, untouched []prItem
 	for _, pr := range m.allPRs {
-		it := prItem{pr: pr, noteCount: m.brain.NoteCountForPR(pr.Repo, pr.Number)}
+		it := prItem{pr: pr, noteCount: m.brain.NoteCountForPR(pr.Repo, pr.Number), scrutinized: m.brain.IsScrutinized(pr.Repo, pr.Number)}
 		// A PR is "in progress" if the brain has any marks for it, even
 		// before we've fetched its file list. This keeps already-touched
 		// PRs from popping between buckets during startup prefetch.
@@ -390,16 +422,23 @@ func (m *model) rebuildPRItems() {
 			} else {
 				it.summary = fmt.Sprintf("%d new", unseen)
 			}
-			// Check if any files need catch-up (PR head moved since last review).
-			reviewedStates := m.brain.AllFileReviewedStates(pr.Repo, pr.Number)
-			catchUpCount := 0
-			for _, f := range files {
-				if s := reviewedStates[f.Path]; s.HeadSHA != "" && (s.HeadSHA != pr.HeadSHA || s.BaseSHA != pr.BaseSHA) {
-					catchUpCount++
+			// Show catch-up session progress if one exists.
+			if session := m.brain.ActiveCatchUp(pr.Repo, pr.Number); session != nil {
+				remaining := session.FilesTotal - session.FilesDone
+				it.summary += fmt.Sprintf(", ↻ %d/%d", session.FilesDone, session.FilesTotal)
+				_ = remaining
+			} else {
+				// No session yet — count files needing catch-up.
+				reviewedStates := m.brain.AllFileReviewedStates(pr.Repo, pr.Number)
+				catchUpCount := 0
+				for _, f := range files {
+					if s := reviewedStates[f.Path]; s.HeadSHA != "" && (s.HeadSHA != pr.HeadSHA || s.BaseSHA != pr.BaseSHA) {
+						catchUpCount++
+					}
 				}
-			}
-			if catchUpCount > 0 {
-				it.summary += fmt.Sprintf(", %d ↻", catchUpCount)
+				if catchUpCount > 0 {
+					it.summary += fmt.Sprintf(", %d ↻", catchUpCount)
+				}
 			}
 		}
 		if looked {
@@ -680,7 +719,9 @@ func (m *model) openFile(fc FileChange) tea.Cmd {
 
 	// Check if this file was previously reviewed at an older head/base.
 	revState := m.brain.FileReviewedState(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
-	needsCatchUp := revState.HeadSHA != "" && (revState.HeadSHA != m.selectedPR.HeadSHA || revState.BaseSHA != m.selectedPR.BaseSHA)
+	// Scrutinized PRs always show the full diff — no catch-up shortcuts.
+	scrutinized := m.brain.IsScrutinized(m.selectedPR.Repo, m.selectedPR.Number)
+	needsCatchUp := !scrutinized && revState.HeadSHA != "" && (revState.HeadSHA != m.selectedPR.HeadSHA || revState.BaseSHA != m.selectedPR.BaseSHA)
 
 	m.currentHunks = parseHunks(fc.Patch)
 	m.currentMarks = m.brain.HunkMarks(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
@@ -909,6 +950,14 @@ func hashLine(s string) string {
 	return h
 }
 
+// advanceCatchUpSession advances the active catch-up session by one file.
+func (m *model) advanceCatchUpSession() {
+	if m.catchUpSession != nil {
+		m.brain.CatchUpAdvanceFile(m.catchUpSession.ID)
+		m.catchUpSession = m.brain.ActiveCatchUp(m.selectedPR.Repo, m.selectedPR.Number)
+	}
+}
+
 func (m *model) saveMarks() {
 	if m.selectedPR == nil || m.selectedFile == "" {
 		return
@@ -967,9 +1016,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.files.Title = fmt.Sprintf("Files in %s#%d", msg.pr.Repo, msg.pr.Number)
 		}
 		// Kick off auto-advance for files that haven't changed since last review.
-		// This runs in the background and updates the brain without user action.
+		// Skip for scrutinized PRs — those always need full review.
 		pr := msg.pr
 		files := msg.files
+		if m.brain.IsScrutinized(pr.Repo, pr.Number) {
+			return m, nil
+		}
 		return m, autoAdvanceCmd(m.brain, pr, files)
 
 	case autoAdvanceMsg:
@@ -977,6 +1029,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rebuildPRItems()
 			if m.selectedPR != nil && prKey(m.selectedPR.Repo, m.selectedPR.Number) == msg.prKey {
 				m.rebuildFileItems()
+				m.catchUpSession = m.brain.ActiveCatchUp(m.selectedPR.Repo, m.selectedPR.Number)
 			}
 			m.statusMsg = fmt.Sprintf("✓ auto-caught-up %d files", len(msg.advancedFiles))
 		}
@@ -1004,6 +1057,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.catchUpClass = ClassB1B2__F1F2
 			m.statusMsg = fmt.Sprintf("✓ %s: %s (auto-caught-up)", m.selectedFile, ClassB1B2__F1F2)
 			m.brain.SetFileReviewed(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile, m.selectedPR.HeadSHA, m.selectedPR.BaseSHA)
+			m.advanceCatchUpSession()
 			return m, nil
 		}
 		// b1==b2, f1≠f2 → ClassB1B2 ("diff extension"), show f1→f2.
@@ -1037,6 +1091,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.statusMsg = fmt.Sprintf("✓ %s: %s (auto-caught-up)", m.selectedFile, label)
 			m.brain.SetFileReviewed(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile, m.selectedPR.HeadSHA, m.selectedPR.BaseSHA)
+			m.advanceCatchUpSession()
 			return m, nil
 		}
 
@@ -1260,6 +1315,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// 's' toggles scrutiny on the selected PR.
+		if m.view == viewPRs && !listIsFiltering(m) && msg.String() == "s" {
+			if it, ok := m.prs.SelectedItem().(prItem); ok {
+				on := !it.scrutinized
+				m.brain.SetScrutiny(it.pr.Repo, it.pr.Number, on)
+				m.rebuildPRItems()
+				if on {
+					m.statusMsg = fmt.Sprintf("scrutiny ON for %s#%d — full diffs, no catch-up shortcuts", it.pr.Repo, it.pr.Number)
+				} else {
+					m.statusMsg = fmt.Sprintf("scrutiny OFF for %s#%d", it.pr.Repo, it.pr.Number)
+				}
+			}
+			return m, nil
+		}
+
 		// Non-diff views. vim-style h/l drill out/in as aliases for esc/enter.
 		// Skip h/l while a filter is active so they're still typeable.
 		switch msg.String() {
@@ -1285,6 +1355,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if it, ok := m.prs.SelectedItem().(prItem); ok {
 					pr := it.pr
 					m.selectedPR = &pr
+					m.catchUpSession = m.brain.ActiveCatchUp(pr.Repo, pr.Number)
 					m.view = viewFiles
 					key := prKey(pr.Repo, pr.Number)
 					if _, cached := m.prFiles[key]; cached {
@@ -1413,7 +1484,7 @@ func (m model) View() string {
 		case viewFiles:
 			footer = "1: files  2: description  3: notes  l/enter: open  h/esc: back  q: quit"
 		default:
-			footer = "l/enter: open  h/esc: back  q: quit"
+			footer = "l/enter: open  s: scrutiny  h/esc: back  q: quit"
 		}
 	}
 	return appStyle.Render(body) + "\n" + lipgloss.NewStyle().Faint(true).Render(footer)

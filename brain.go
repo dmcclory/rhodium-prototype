@@ -100,6 +100,24 @@ func LoadBrain() (*Brain, error) {
 			reviewed_at TEXT NOT NULL DEFAULT (datetime('now')),
 			PRIMARY KEY (pr_key, path)
 		);
+
+		CREATE TABLE IF NOT EXISTS pr_scrutiny (
+			pr_key TEXT NOT NULL PRIMARY KEY
+		);
+
+		CREATE TABLE IF NOT EXISTS catch_up_sessions (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			pr_key      TEXT    NOT NULL,
+			old_head    TEXT    NOT NULL,
+			new_head    TEXT    NOT NULL,
+			old_base    TEXT    NOT NULL DEFAULT '',
+			new_base    TEXT    NOT NULL DEFAULT '',
+			files_total INTEGER NOT NULL DEFAULT 0,
+			files_done  INTEGER NOT NULL DEFAULT 0,
+			created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+			completed_at TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_catchup_pr ON catch_up_sessions (pr_key);
 	`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate brain db: %w", err)
@@ -109,6 +127,115 @@ func LoadBrain() (*Brain, error) {
 
 func (b *Brain) Close() error {
 	return b.db.Close()
+}
+
+// CatchUpSession represents a persistent catch-up session.
+type CatchUpSession struct {
+	ID          int64
+	PRKey       string
+	OldHead     string
+	NewHead     string
+	OldBase     string
+	NewBase     string
+	FilesTotal  int
+	FilesDone   int
+	CreatedAt   string
+	CompletedAt string // empty if still active
+}
+
+// ActiveCatchUp returns the active (incomplete) catch-up session for a PR, or nil.
+func (b *Brain) ActiveCatchUp(repo string, pr int) *CatchUpSession {
+	key := prKey(repo, pr)
+	var s CatchUpSession
+	var completedAt sql.NullString
+	err := b.db.QueryRow(
+		`SELECT id, pr_key, old_head, new_head, old_base, new_base, files_total, files_done, created_at, completed_at
+		 FROM catch_up_sessions WHERE pr_key = ? AND completed_at IS NULL ORDER BY id DESC LIMIT 1`, key,
+	).Scan(&s.ID, &s.PRKey, &s.OldHead, &s.NewHead, &s.OldBase, &s.NewBase, &s.FilesTotal, &s.FilesDone, &s.CreatedAt, &completedAt)
+	if err != nil {
+		return nil
+	}
+	if completedAt.Valid {
+		s.CompletedAt = completedAt.String
+	}
+	return &s
+}
+
+// CreateCatchUp creates a new catch-up session. If there's already an active
+// session for this PR, it completes it first.
+func (b *Brain) CreateCatchUp(repo string, pr int, oldHead, newHead, oldBase, newBase string, filesTotal int) (*CatchUpSession, error) {
+	key := prKey(repo, pr)
+	// Complete any existing active session.
+	b.db.Exec(`UPDATE catch_up_sessions SET completed_at = datetime('now') WHERE pr_key = ? AND completed_at IS NULL`, key)
+
+	res, err := b.db.Exec(
+		`INSERT INTO catch_up_sessions (pr_key, old_head, new_head, old_base, new_base, files_total) VALUES (?, ?, ?, ?, ?, ?)`,
+		key, oldHead, newHead, oldBase, newBase, filesTotal)
+	if err != nil {
+		return nil, err
+	}
+	id, _ := res.LastInsertId()
+	return &CatchUpSession{
+		ID: id, PRKey: key,
+		OldHead: oldHead, NewHead: newHead, OldBase: oldBase, NewBase: newBase,
+		FilesTotal: filesTotal,
+	}, nil
+}
+
+// CatchUpAdvanceFile increments the files_done counter and marks the session
+// complete if all files are done.
+func (b *Brain) CatchUpAdvanceFile(sessionID int64) error {
+	_, err := b.db.Exec(`UPDATE catch_up_sessions SET files_done = files_done + 1 WHERE id = ?`, sessionID)
+	if err != nil {
+		return err
+	}
+	// Auto-complete if done.
+	_, err = b.db.Exec(`UPDATE catch_up_sessions SET completed_at = datetime('now') WHERE id = ? AND files_done >= files_total`, sessionID)
+	return err
+}
+
+// CompleteCatchUp marks a session as completed.
+func (b *Brain) CompleteCatchUp(sessionID int64) error {
+	_, err := b.db.Exec(`UPDATE catch_up_sessions SET completed_at = datetime('now') WHERE id = ?`, sessionID)
+	return err
+}
+
+// AllActiveCatchUps returns all active catch-up sessions across all PRs.
+func (b *Brain) AllActiveCatchUps() []CatchUpSession {
+	rows, err := b.db.Query(
+		`SELECT id, pr_key, old_head, new_head, old_base, new_base, files_total, files_done, created_at
+		 FROM catch_up_sessions WHERE completed_at IS NULL ORDER BY created_at DESC`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []CatchUpSession
+	for rows.Next() {
+		var s CatchUpSession
+		if rows.Scan(&s.ID, &s.PRKey, &s.OldHead, &s.NewHead, &s.OldBase, &s.NewBase, &s.FilesTotal, &s.FilesDone, &s.CreatedAt) == nil {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// IsScrutinized returns whether a PR is marked for full scrutiny.
+func (b *Brain) IsScrutinized(repo string, pr int) bool {
+	key := prKey(repo, pr)
+	var exists bool
+	b.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pr_scrutiny WHERE pr_key = ?)`, key).Scan(&exists)
+	return exists
+}
+
+// SetScrutiny marks or unmarks a PR for scrutiny.
+func (b *Brain) SetScrutiny(repo string, pr int, on bool) error {
+	key := prKey(repo, pr)
+	if on {
+		_, err := b.db.Exec(`INSERT OR IGNORE INTO pr_scrutiny (pr_key) VALUES (?)`, key)
+		return err
+	}
+	_, err := b.db.Exec(`DELETE FROM pr_scrutiny WHERE pr_key = ?`, key)
+	return err
 }
 
 func (b *Brain) HasAnyMarks(repo string, pr int) bool {
