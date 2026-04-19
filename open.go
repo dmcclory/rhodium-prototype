@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -29,12 +30,22 @@ func launchEditor(cfg *Config, worktree, file, prKey string, line int) tea.Cmd {
 	nvimArgs = append(nvimArgs, fmt.Sprintf("+%d", line), file)
 
 	if os.Getenv("TMUX") != "" && cfg.TmuxMode() != "off" {
-		args := tmuxArgs(cfg.TmuxMode(), worktree, prKey)
-		args = append(args, editor)
-		args = append(args, nvimArgs...)
+		// Spawn the pane as the user's default interactive shell (tmux's
+		// default), capture its pane id, then `send-keys` the nvim command.
+		// This keeps nvim as a foreground job of a real interactive shell so
+		// ctrl-z / fg / job control all work as expected — unlike wrapping
+		// in `$SHELL -c`, which is non-interactive and has no job control.
+		spawnArgs := tmuxArgs(cfg.TmuxMode(), worktree, prKey)
+		spawnArgs = append(spawnArgs, "-P", "-F", "#{pane_id}")
+		cmdline := shellJoin(append([]string{editor}, nvimArgs...))
 		return func() tea.Msg {
-			if err := exec.Command("tmux", args...).Run(); err != nil {
-				return editorDoneMsg{err: fmt.Errorf("tmux: %w", err)}
+			out, err := exec.Command("tmux", spawnArgs...).Output()
+			if err != nil {
+				return editorDoneMsg{err: fmt.Errorf("tmux spawn: %w", err)}
+			}
+			paneID := strings.TrimSpace(string(out))
+			if err := exec.Command("tmux", "send-keys", "-t", paneID, cmdline, "Enter").Run(); err != nil {
+				return editorDoneMsg{err: fmt.Errorf("tmux send-keys: %w", err)}
 			}
 			return editorDoneMsg{}
 		}
@@ -64,6 +75,20 @@ func tmuxArgs(mode, cwd, prKey string) []string {
 // the pane/window).
 type editorDoneMsg struct {
 	err error
+}
+
+// shellQuote wraps s in POSIX single quotes, escaping any embedded single
+// quotes. Safe for composing into a command line sent via `tmux send-keys`.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func shellJoin(args []string) string {
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = shellQuote(a)
+	}
+	return strings.Join(quoted, " ")
 }
 
 // nvimPluginPath returns the absolute path to rhodium.lua if we can find one.

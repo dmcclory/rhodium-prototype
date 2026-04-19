@@ -81,7 +81,14 @@ When `$TMUX` is set, `o` launches the editor through tmux. Config:
 - `"split-v"` — vertical split.
 - `"off"` — suspend the TUI and run the editor inline, even inside tmux.
 
-When `$TMUX` isn't set, rhodium always uses the inline fallback
+In every tmux mode, rhodium spawns the pane as your default interactive
+shell (tmux's normal behavior) and then `send-keys` the nvim command
+into it. This preserves full job control: `Ctrl-Z` suspends nvim back
+to the shell, `fg` resumes it, and the pane persists until you `exit`.
+When you quit nvim you're at a prompt in the worktree — handy for
+`git status`, running tests, or re-launching nvim.
+
+When `$TMUX` isn't set, rhodium uses the inline fallback
 (`tea.ExecProcess`): TUI suspends, editor runs, TUI resumes on exit.
 
 ## Usage
