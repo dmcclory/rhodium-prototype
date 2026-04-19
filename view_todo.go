@@ -2,40 +2,96 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
-func (m model) viewTodo() string {
-	return m.todo.View()
+// --- todoView ---
+
+type todoView struct {
+	list list.Model
 }
 
-// rebuildTodoItems walks m.allPRs and emits a todoItem for each PR with
-// outstanding work. Groups into two sections: "needs attention" (in-progress,
-// catch-up, notes) and "new" (never-touched). When there's nothing actionable,
-// shows a "caught up" header so the list isn't a wall of "unseen" rows with
-// no context.
-func (m *model) rebuildTodoItems() {
+func newTodoView() todoView {
+	l := list.New(nil, compactDelegate(), 0, 0)
+	l.Title = "Todo"
+	return todoView{list: l}
+}
+
+func (v *todoView) Resize(w, h int) { v.list.SetSize(w, h) }
+
+func (v *todoView) View(a *app) string { return v.list.View() }
+
+func (v *todoView) Footer(a *app) string {
+	return "l/enter: open  a: all PRs  q: quit"
+}
+
+// Update handles keys for the todo view. Returns the command to run.
+func (v *todoView) Update(a *app, msg tea.Msg) tea.Cmd {
+	key, isKey := msg.(tea.KeyMsg)
+	if !isKey {
+		return v.delegate(msg)
+	}
+
+	filtering := v.list.FilterState() == list.Filtering
+
+	switch key.String() {
+	case "ctrl+c", "q":
+		if !filtering {
+			return tea.Quit
+		}
+	case "a":
+		if !filtering {
+			a.activeView = viewPRs
+			return nil
+		}
+	case "enter", "l", "right":
+		if key.String() == "l" && filtering {
+			break
+		}
+		if it, ok := v.list.SelectedItem().(todoItem); ok {
+			return a.openPR(it.pr)
+		}
+	}
+	return v.delegate(msg)
+}
+
+func (v *todoView) delegate(msg tea.Msg) tea.Cmd {
+	prev := v.list.Index()
+	var cmd tea.Cmd
+	v.list, cmd = v.list.Update(msg)
+	skipSectionHeaders(&v.list, prev)
+	return cmd
+}
+
+// rebuild walks a.allPRs and emits a todoItem for each PR with
+// outstanding work. Groups into two sections: "needs attention"
+// (in-progress, catch-up, notes) and "new" (never-touched). When
+// there's nothing actionable, shows a "caught up" header so the list
+// isn't a wall of "unseen" rows with no context.
+func (v *todoView) rebuild(a *app) {
 	var savedKey string
-	if sel, ok := m.todo.SelectedItem().(todoItem); ok {
+	if sel, ok := v.list.SelectedItem().(todoItem); ok {
 		savedKey = prKey(sel.pr.Repo, sel.pr.Number)
 	}
 
 	var actionable, newPRs []todoItem
-	for _, pr := range m.allPRs {
+	for _, pr := range a.allPRs {
 		key := prKey(pr.Repo, pr.Number)
-		ti := buildTodoItem(m, pr)
+		ti := buildTodoItem(a, pr)
 
-		// Pin PRs to "needs attention" once they first appear there — prevents
-		// the list from shifting under the user as they mark things reviewed.
+		// Pin PRs to "needs attention" once they first appear there —
+		// prevents the list from shifting under the user as they mark
+		// things reviewed.
 		isActionableNow := ti != nil && !(len(ti.tags) == 1 && ti.tags[0] == "unseen")
 		if isActionableNow {
-			m.pinnedAttention[key] = true
+			a.pinnedAttention[key] = true
 		}
 
-		if m.pinnedAttention[key] {
+		if a.pinnedAttention[key] {
 			if ti == nil {
-				// All work resolved mid-session — show as done rather than vanish.
 				ti = &todoItem{pr: pr, tags: []string{"done"}}
 			}
 			actionable = append(actionable, *ti)
@@ -44,7 +100,6 @@ func (m *model) rebuildTodoItems() {
 		if ti == nil {
 			continue
 		}
-		// Not pinned → must be the "unseen" case.
 		newPRs = append(newPRs, *ti)
 	}
 
@@ -70,36 +125,78 @@ func (m *model) rebuildTodoItems() {
 		items = append(items, sectionItem{label: "── ✓ nothing to do ──"})
 	}
 
-	m.todo.SetItems(items)
+	v.list.SetItems(items)
 	total := len(actionable) + len(newPRs)
-	m.todo.Title = fmt.Sprintf("Todo (%d)", total)
+	v.list.Title = fmt.Sprintf("Todo (%d)", total)
 
 	if savedKey != "" {
 		for i, it := range items {
 			if pi, ok := it.(todoItem); ok && prKey(pi.pr.Repo, pi.pr.Number) == savedKey {
-				m.todo.Select(i)
+				v.list.Select(i)
 				break
 			}
 		}
 	}
 }
 
-// buildTodoItem returns a todoItem for pr if it needs attention, or nil otherwise.
-func buildTodoItem(m *model, pr PR) *todoItem {
-	notes := m.brain.NoteCountForPR(pr.Repo, pr.Number)
-	cu := m.brain.ActiveCatchUp(pr.Repo, pr.Number)
-	touched := m.brain.HasAnyMarks(pr.Repo, pr.Number) ||
-		len(m.brain.AllFileReviewedStates(pr.Repo, pr.Number)) > 0
+func (v *todoView) filtering() bool { return v.list.FilterState() == list.Filtering }
 
-	files, filesLoaded := m.prFiles[prKey(pr.Repo, pr.Number)]
+// --- todoItem ---
+
+// todoItem is a compact row in the todo dashboard view. Only PRs with
+// outstanding work (in-progress, catch-up, unseen, notes) become todoItems.
+type todoItem struct {
+	pr        PR
+	tags      []string // in stable order: in-progress, catch-up, unseen, notes
+	done      int      // catch-up progress — ignored when catch-up absent
+	total     int
+	remaining int // unseen hunk count — ignored when files not loaded
+	notes     int
+}
+
+func (i todoItem) Title() string {
+	var suffix []string
+	for _, t := range i.tags {
+		switch t {
+		case "in-progress":
+			if i.remaining > 0 {
+				suffix = append(suffix, fmt.Sprintf("%d new", i.remaining))
+			} else {
+				suffix = append(suffix, "in progress")
+			}
+		case "catch-up":
+			suffix = append(suffix, fmt.Sprintf("catch-up %d/%d", i.done, i.total))
+		case "unseen":
+			suffix = append(suffix, "unseen")
+		case "notes":
+			suffix = append(suffix, fmt.Sprintf("%d notes", i.notes))
+		case "done":
+			suffix = append(suffix, "✓ done")
+		}
+	}
+	head := fmt.Sprintf("%s#%d  %s  @%s", i.pr.Repo, i.pr.Number, i.pr.Title, i.pr.Author)
+	if len(suffix) > 0 {
+		head += "  [" + strings.Join(suffix, ", ") + "]"
+	}
+	return head
+}
+func (i todoItem) Description() string { return "" }
+func (i todoItem) FilterValue() string { return i.Title() }
+
+// buildTodoItem returns a todoItem for pr if it needs attention, or nil otherwise.
+func buildTodoItem(a *app, pr PR) *todoItem {
+	notes := a.brain.NoteCountForPR(pr.Repo, pr.Number)
+	cu := a.brain.ActiveCatchUp(pr.Repo, pr.Number)
+	touched := a.brain.HasAnyMarks(pr.Repo, pr.Number) ||
+		len(a.brain.AllFileReviewedStates(pr.Repo, pr.Number)) > 0
+
+	files, filesLoaded := a.prFiles[prKey(pr.Repo, pr.Number)]
 	var remaining int
 	if filesLoaded {
-		remaining = m.brain.UnseenCount(pr.Repo, pr.Number, files)
+		remaining = a.brain.UnseenCount(pr.Repo, pr.Number, files)
 	}
 
 	it := todoItem{pr: pr, notes: notes, remaining: remaining}
-	// in-progress: reviewer has started. Drop it once every file is fully seen
-	// and there's no catch-up pending — nothing left to do.
 	if touched && cu == nil {
 		if !filesLoaded || remaining > 0 {
 			it.tags = append(it.tags, "in-progress")

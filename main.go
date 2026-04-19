@@ -26,7 +26,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	p := tea.NewProgram(newModel(cfg, brain), tea.WithAltScreen())
+	p := tea.NewProgram(newApp(cfg, brain), tea.WithAltScreen())
 	program = p
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

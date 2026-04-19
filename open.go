@@ -70,13 +70,6 @@ func tmuxArgs(mode, cwd, prKey string) []string {
 	}
 }
 
-// editorDoneMsg fires when the editor process exits (ExecProcess path) or
-// the tmux command returns (tmux path — typically immediately after spawning
-// the pane/window).
-type editorDoneMsg struct {
-	err error
-}
-
 // shellQuote wraps s in POSIX single quotes, escaping any embedded single
 // quotes. Safe for composing into a command line sent via `tmux send-keys`.
 func shellQuote(s string) string {

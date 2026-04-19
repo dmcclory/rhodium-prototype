@@ -4,60 +4,143 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func (m model) viewDiff() string {
-	if m.noting {
-		return m.renderNotingView()
-	}
-	return m.diff.View()
+// --- diffView ---
+
+type diffView struct {
+	vp        viewport.Model
+	noteInput textarea.Model
+
+	hunks      []Hunk
+	marks      map[string]bool
+	notes      []Note
+	hunkLines  []int
+	lineMap    []int // output line → new-file line number (0 = non-file line)
+	hunkIdx    int
+	cursorLine int
+	diffLines  []string // raw content lines for manual rendering in noting mode
+	blob       string   // full file content, empty until blob loads
+
+	// Catch-up diff state.
+	catchUpMode    bool   // true when showing only the delta since last review
+	catchUpOldHead string // the head SHA we last reviewed at (f1)
+	catchUpOldBase string // the base SHA we last reviewed at (b1)
+	catchUpClass   Class  // diff4 classification of the catch-up
+	catchUpPatch   string // the delta patch for the current file
+
+	// Note input state.
+	noting       bool
+	noteLineNo   int
+	noteLineHash string
 }
 
-// openFile loads a file into the diff view: parse hunks, seed marks from the
-// brain, show patch view immediately, then kick off blob fetch for full file.
-//
-// If the PR head has moved since this file was last reviewed, we enter catch-up
-// mode: fetch only the delta and show that instead of the full PR diff.
-func (m *model) openFile(fc FileChange) tea.Cmd {
-	m.selectedFile = fc.Path
-	m.view = viewDiff
-	m.blobContent = ""
-	m.catchUpMode = false
-	m.catchUpOldHead = ""
-	m.catchUpOldBase = ""
-	m.catchUpClass = ClassB1B2F1F2
-	m.catchUpPatch = ""
+func newDiffView() diffView {
+	ti := textarea.New()
+	ti.Placeholder = "Write a note... (ctrl+d to save, esc to cancel)"
+	ti.SetHeight(3)
+	ti.ShowLineNumbers = false
+	return diffView{
+		vp:        viewport.New(0, 0),
+		noteInput: ti,
+	}
+}
 
-	// Check if this file was previously reviewed at an older head/base.
-	revState := m.brain.FileReviewedState(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
-	// Scrutinized PRs always show the full diff — no catch-up shortcuts.
-	scrutinized := m.brain.IsScrutinized(m.selectedPR.Repo, m.selectedPR.Number)
-	needsCatchUp := !scrutinized && revState.HeadSHA != "" && (revState.HeadSHA != m.selectedPR.HeadSHA || revState.BaseSHA != m.selectedPR.BaseSHA)
+func (v *diffView) Resize(w, h int) {
+	v.vp.Width = w
+	v.vp.Height = h
+}
 
-	m.currentHunks = parseHunks(fc.Patch)
-	m.currentMarks = m.brain.HunkMarks(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
-	m.currentNotes = m.brain.NotesForFile(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
-	m.hunkIdx = firstUnmarked(m.currentHunks, m.currentMarks)
-	m.redrawDiff()
-	m.jumpToCurrentHunk()
+func (v *diffView) View(a *app) string {
+	if v.noting {
+		return v.renderNotingView(a)
+	}
+	return v.vp.View()
+}
+
+func (v *diffView) Footer(a *app) string {
+	if v.noting {
+		return fmt.Sprintf("line %d  ctrl+d: save  esc: cancel", v.noteLineNo)
+	}
+	marked := 0
+	for _, h := range v.hunks {
+		if v.marks[h.Hash] {
+			marked++
+		}
+	}
+	total := len(v.hunks)
+	cur := v.hunkIdx + 1
+	if total == 0 {
+		cur = 0
+	}
+	modeHint := ""
+	if v.catchUpOldHead != "" {
+		if v.catchUpMode {
+			modeHint = fmt.Sprintf("  [catch-up %s since %s]  d: full diff", v.catchUpClass, shortSHA(v.catchUpOldHead))
+		} else {
+			modeHint = "  [full diff]  d: catch-up"
+		}
+	}
+	return fmt.Sprintf("hunk %d/%d  marked %d/%d%s  ↑/↓: nav  j/k: cursor  space: toggle+next  m: mark all  c: note  o: open in editor  u: unmark  h: back", cur, total, marked, total, modeHint)
+}
+
+// Update routes keys + messages while the diff view is active.
+func (v *diffView) Update(a *app, msg tea.Msg) tea.Cmd {
+	if key, ok := msg.(tea.KeyMsg); ok {
+		if v.noting {
+			return v.updateNotingKeys(a, key)
+		}
+		return v.updateKeys(a, key)
+	}
+	var cmd tea.Cmd
+	v.vp, cmd = v.vp.Update(msg)
+	return cmd
+}
+
+// open loads a file into the diff view: parse hunks, seed marks from
+// the brain, show patch view immediately, then kick off blob fetch for
+// full file. If the PR head has moved since this file was last reviewed,
+// we enter catch-up mode: fetch only the delta and show that instead of
+// the full PR diff.
+func (v *diffView) open(a *app, fc FileChange) tea.Cmd {
+	a.selectedFile = fc.Path
+	a.activeView = viewDiff
+	v.blob = ""
+	v.catchUpMode = false
+	v.catchUpOldHead = ""
+	v.catchUpOldBase = ""
+	v.catchUpClass = ClassB1B2F1F2
+	v.catchUpPatch = ""
+
+	revState := a.brain.FileReviewedState(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
+	scrutinized := a.brain.IsScrutinized(a.selectedPR.Repo, a.selectedPR.Number)
+	needsCatchUp := !scrutinized && revState.HeadSHA != "" && (revState.HeadSHA != a.selectedPR.HeadSHA || revState.BaseSHA != a.selectedPR.BaseSHA)
+
+	v.hunks = parseHunks(fc.Patch)
+	v.marks = a.brain.HunkMarks(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
+	v.notes = a.brain.NotesForFile(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
+	v.hunkIdx = firstUnmarked(v.hunks, v.marks)
+	v.redraw()
+	v.jumpToHunk()
 
 	var cmds []tea.Cmd
 
 	if needsCatchUp {
-		m.catchUpOldHead = revState.HeadSHA
-		m.catchUpOldBase = revState.BaseSHA
-		repo := m.selectedPR.Repo
+		v.catchUpOldHead = revState.HeadSHA
+		v.catchUpOldBase = revState.BaseSHA
+		repo := a.selectedPR.Repo
 		oldHead := revState.HeadSHA
 		oldBase := revState.BaseSHA
-		newHead := m.selectedPR.HeadSHA
-		newBase := m.selectedPR.BaseSHA
+		newHead := a.selectedPR.HeadSHA
+		newBase := a.selectedPR.BaseSHA
 		path := fc.Path
 		rebased := oldBase != newBase && oldBase != ""
 
 		if rebased {
-			// Rebase detected — fetch file at all 4 corners and classify.
-			m.statusMsg = fmt.Sprintf("classifying diamond (rebase %s→%s)", shortSHA(oldBase), shortSHA(newBase))
+			a.statusMsg = fmt.Sprintf("classifying diamond (rebase %s→%s)", shortSHA(oldBase), shortSHA(newBase))
 			cmds = append(cmds, func() tea.Msg {
 				b1, _ := fetchFileAtRef(repo, path, oldBase)
 				f1, _ := fetchFileAtRef(repo, path, oldHead)
@@ -65,18 +148,8 @@ func (m *model) openFile(fc FileChange) tea.Cmd {
 				f2, _ := fetchFileAtRef(repo, path, newHead)
 				d := Diamond{B1: b1, F1: f1, B2: b2, F2: f2}
 				class := Classify(d, nil)
-				// Get the catch-up patch via compare for shown classes.
 				var patch string
 				if !class.Hidden() {
-					views := class.Views()
-					if len(views) > 0 {
-						// Fetch compare diff for the primary view's corners.
-						from := d.Get(views[0].From)
-						to := d.Get(views[0].To)
-						_ = from // We use the compare API for the patch.
-						_ = to
-					}
-					// Use compare API between old tip and new tip for the patch.
 					files, _ := fetchCompare(repo, oldHead, newHead)
 					for _, f := range files {
 						if f.Path == path {
@@ -88,8 +161,7 @@ func (m *model) openFile(fc FileChange) tea.Cmd {
 				return diamondClassifiedMsg{path: path, class: class, diamond: d, patch: patch}
 			})
 		} else {
-			// No rebase — use compare API (fast path, b1==b2).
-			m.statusMsg = fmt.Sprintf("loading catch-up diff %s..%s", shortSHA(oldHead), shortSHA(newHead))
+			a.statusMsg = fmt.Sprintf("loading catch-up diff %s..%s", shortSHA(oldHead), shortSHA(newHead))
 			cmds = append(cmds, func() tea.Msg {
 				files, err := fetchCompare(repo, oldHead, newHead)
 				return catchUpLoadedMsg{path: path, files: files, err: err}
@@ -98,7 +170,7 @@ func (m *model) openFile(fc FileChange) tea.Cmd {
 	}
 
 	if fc.Blob != "" {
-		repo := m.selectedPR.Repo
+		repo := a.selectedPR.Repo
 		sha := fc.Blob
 		cmds = append(cmds, func() tea.Msg {
 			content, err := fetchBlob(repo, sha)
@@ -112,77 +184,165 @@ func (m *model) openFile(fc FileChange) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-func (m *model) redrawDiff() {
-	if len(m.currentHunks) == 0 {
-		m.diff.SetContent("(no hunks — nothing to review)")
-		m.hunkLines = nil
+// --- async message callbacks ---
+
+func (v *diffView) onCatchUpLoaded(a *app, msg catchUpLoadedMsg) tea.Cmd {
+	if msg.err != nil {
+		a.statusMsg = "catch-up: " + msg.err.Error()
+		return nil
+	}
+	if a.activeView != viewDiff || a.selectedFile != msg.path {
+		return nil
+	}
+	var deltaFC *FileChange
+	for _, f := range msg.files {
+		if f.Path == msg.path {
+			deltaFC = &f
+			break
+		}
+	}
+	if deltaFC == nil || deltaFC.Patch == "" {
+		v.catchUpMode = false
+		v.catchUpClass = ClassB1B2__F1F2
+		a.statusMsg = fmt.Sprintf("✓ %s: %s (auto-caught-up)", a.selectedFile, ClassB1B2__F1F2)
+		a.brain.SetFileReviewed(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile, a.selectedPR.HeadSHA, a.selectedPR.BaseSHA)
+		a.advanceCatchUpSession()
+		return nil
+	}
+	v.catchUpMode = true
+	v.catchUpClass = ClassB1B2
+	v.catchUpPatch = deltaFC.Patch
+	v.hunks = parseHunks(deltaFC.Patch)
+	v.marks = a.brain.HunkMarks(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile)
+	v.hunkIdx = firstUnmarked(v.hunks, v.marks)
+	a.statusMsg = fmt.Sprintf("catch-up [%s]: f1→f2 since %s  (d: full diff)", ClassB1B2, shortSHA(v.catchUpOldHead))
+	v.redraw()
+	v.jumpToHunk()
+	return nil
+}
+
+func (v *diffView) onDiamondClassified(a *app, msg diamondClassifiedMsg) tea.Cmd {
+	if msg.err != nil {
+		a.statusMsg = "classify: " + msg.err.Error()
+		return nil
+	}
+	if a.activeView != viewDiff || a.selectedFile != msg.path {
+		return nil
+	}
+	v.catchUpClass = msg.class
+
+	if msg.class.Hidden() {
+		v.catchUpMode = false
+		label := msg.class.String()
+		if msg.class.IsForget() {
+			label = "FORGET — base absorbed feature"
+		}
+		a.statusMsg = fmt.Sprintf("✓ %s: %s (auto-caught-up)", a.selectedFile, label)
+		a.brain.SetFileReviewed(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile, a.selectedPR.HeadSHA, a.selectedPR.BaseSHA)
+		a.advanceCatchUpSession()
+		return nil
+	}
+
+	v.catchUpMode = true
+	if msg.patch != "" {
+		v.catchUpPatch = msg.patch
+		v.hunks = parseHunks(msg.patch)
+	}
+	v.marks = a.brain.HunkMarks(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile)
+	v.hunkIdx = firstUnmarked(v.hunks, v.marks)
+	views := msg.class.Views()
+	viewLabel := ""
+	if len(views) > 0 {
+		viewLabel = fmt.Sprintf("%s→%s", views[0].From, views[0].To)
+	}
+	a.statusMsg = fmt.Sprintf("catch-up [%s]: %s  (d: full diff)", msg.class, viewLabel)
+	v.redraw()
+	v.jumpToHunk()
+	return nil
+}
+
+func (v *diffView) onBlobLoaded(a *app, msg blobLoadedMsg) tea.Cmd {
+	if msg.err != nil {
+		a.statusMsg = "blob: " + msg.err.Error()
+		return nil
+	}
+	if a.activeView == viewDiff {
+		v.blob = msg.content
+		if !v.catchUpMode {
+			v.redraw()
+			v.jumpToHunk()
+		}
+	}
+	return nil
+}
+
+// --- rendering ---
+
+func (v *diffView) redraw() {
+	if len(v.hunks) == 0 {
+		v.vp.SetContent("(no hunks — nothing to review)")
+		v.hunkLines = nil
 		return
 	}
 	var body string
 	var lines []int
 	var lmap []int
-	if m.blobContent != "" {
-		body, lines, lmap = renderFullFile(m.blobContent, m.currentHunks, m.currentMarks, m.hunkIdx, m.currentNotes, m.cursorLine)
+	if v.blob != "" {
+		body, lines, lmap = renderFullFile(v.blob, v.hunks, v.marks, v.hunkIdx, v.notes, v.cursorLine)
 	} else {
-		body, lines, lmap = renderHunks(m.currentHunks, m.currentMarks, m.hunkIdx, m.currentNotes, m.cursorLine)
+		body, lines, lmap = renderHunks(v.hunks, v.marks, v.hunkIdx, v.notes, v.cursorLine)
 	}
-	m.diff.SetContent(body)
-	m.diffLines = strings.Split(body, "\n")
-	m.hunkLines = lines
-	m.lineMap = lmap
+	v.vp.SetContent(body)
+	v.diffLines = strings.Split(body, "\n")
+	v.hunkLines = lines
+	v.lineMap = lmap
 }
 
-func (m *model) jumpToCurrentHunk() {
-	if m.hunkIdx < 0 || m.hunkIdx >= len(m.hunkLines) {
+func (v *diffView) jumpToHunk() {
+	if v.hunkIdx < 0 || v.hunkIdx >= len(v.hunkLines) {
 		return
 	}
-	target := m.hunkLines[m.hunkIdx]
-	m.cursorLine = target
-	m.diff.SetYOffset(target)
+	target := v.hunkLines[v.hunkIdx]
+	v.cursorLine = target
+	v.vp.SetYOffset(target)
 }
 
-func (m *model) allHunksMarked() bool {
-	for _, h := range m.currentHunks {
-		if !m.currentMarks[h.Hash] {
+func (v *diffView) allMarked() bool {
+	for _, h := range v.hunks {
+		if !v.marks[h.Hash] {
 			return false
 		}
 	}
-	return len(m.currentHunks) > 0
+	return len(v.hunks) > 0
 }
 
-func (m *model) renderNotingView() string {
-	_, v := appStyle.GetFrameSize()
-	totalH := m.height - v - 1 // minus footer
-	taHeight := m.noteInput.Height() + 2
+func (v *diffView) renderNotingView(a *app) string {
+	_, padV := appStyle.GetFrameSize()
+	totalH := a.height - padV - 1 // minus footer
+	taHeight := v.noteInput.Height() + 2
 	diffH := totalH - taHeight
 
-	contentLines := m.diffLines
+	contentLines := v.diffLines
 
-	// Where does the cursor sit relative to the current scroll?
-	screenPos := m.cursorLine - m.diff.YOffset
-	yOff := m.diff.YOffset
+	screenPos := v.cursorLine - v.vp.YOffset
+	yOff := v.vp.YOffset
 
-	// If cursor is too close to the bottom, scroll up to make room for the
-	// textarea right under the cursor line.
 	maxScreenPos := diffH - taHeight - 1
 	if maxScreenPos < 0 {
 		maxScreenPos = 0
 	}
 	if screenPos > maxScreenPos {
-		yOff = m.cursorLine - maxScreenPos
+		yOff = v.cursorLine - maxScreenPos
 		screenPos = maxScreenPos
 	}
 	if yOff < 0 {
 		yOff = 0
 	}
 
-	// Lines above textarea: from yOff to cursor line (inclusive).
 	aboveCount := screenPos + 1
-	// Lines below textarea fill the rest.
 	belowCount := diffH - aboveCount
 
 	var b strings.Builder
-	// Above section.
 	for i := 0; i < aboveCount; i++ {
 		idx := yOff + i
 		if idx < len(contentLines) {
@@ -190,10 +350,8 @@ func (m *model) renderNotingView() string {
 		}
 		b.WriteByte('\n')
 	}
-	// Textarea.
-	b.WriteString(m.noteInput.View())
+	b.WriteString(v.noteInput.View())
 	b.WriteByte('\n')
-	// Below section.
 	belowStart := yOff + aboveCount
 	for i := 0; i < belowCount; i++ {
 		idx := belowStart + i
@@ -205,42 +363,35 @@ func (m *model) renderNotingView() string {
 	return b.String()
 }
 
-func (m *model) restoreDiffSize() {
-	h, v := appStyle.GetFrameSize()
-	m.diff.Width = m.width - h
-	m.diff.Height = m.height - v - 1
-}
-
-func (m *model) moveCursor(delta int) {
-	next := m.cursorLine + delta
+func (v *diffView) moveCursor(delta int) {
+	next := v.cursorLine + delta
 	if next < 0 {
 		next = 0
 	}
-	if max := len(m.lineMap) - 1; max >= 0 && next > max {
+	if max := len(v.lineMap) - 1; max >= 0 && next > max {
 		next = max
 	}
-	m.cursorLine = next
-	m.redrawDiff()
-	// Scroll viewport to keep cursor visible.
-	if m.cursorLine < m.diff.YOffset {
-		m.diff.SetYOffset(m.cursorLine)
-	} else if m.cursorLine >= m.diff.YOffset+m.diff.Height {
-		m.diff.SetYOffset(m.cursorLine - m.diff.Height + 1)
+	v.cursorLine = next
+	v.redraw()
+	if v.cursorLine < v.vp.YOffset {
+		v.vp.SetYOffset(v.cursorLine)
+	} else if v.cursorLine >= v.vp.YOffset+v.vp.Height {
+		v.vp.SetYOffset(v.cursorLine - v.vp.Height + 1)
 	}
 }
 
-func (m *model) cursorFileLine() int {
-	if m.cursorLine < 0 || m.cursorLine >= len(m.lineMap) {
+func (v *diffView) cursorFileLine() int {
+	if v.cursorLine < 0 || v.cursorLine >= len(v.lineMap) {
 		return 0
 	}
-	return m.lineMap[m.cursorLine]
+	return v.lineMap[v.cursorLine]
 }
 
-func (m *model) cursorLineHash(lineNo int) string {
-	if m.blobContent == "" {
+func (v *diffView) cursorLineHash(lineNo int) string {
+	if v.blob == "" {
 		return ""
 	}
-	lines := strings.Split(m.blobContent, "\n")
+	lines := strings.Split(v.blob, "\n")
 	idx := lineNo - 1
 	if idx < 0 || idx >= len(lines) {
 		return ""
@@ -248,181 +399,204 @@ func (m *model) cursorLineHash(lineNo int) string {
 	return hashLine(lines[idx])
 }
 
-// openInEditor launches the configured editor at the current hunk's location
-// in a worktree dedicated to this PR. Returns a tea.Cmd that either suspends
-// the TUI (no tmux) or spawns a tmux pane/window.
-func (m *model) openInEditor() (tea.Cmd, error) {
-	if m.selectedPR == nil || m.selectedFile == "" {
+// --- persistence helpers ---
+
+func (v *diffView) saveMarks(a *app) {
+	if a.selectedPR == nil || a.selectedFile == "" {
+		return
+	}
+	if err := a.brain.SetHunkMarks(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile, v.marks); err != nil {
+		a.statusMsg = "save error: " + err.Error()
+		return
+	}
+	if a.selectedPR.HeadSHA != "" {
+		a.brain.SetFileReviewed(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile, a.selectedPR.HeadSHA, a.selectedPR.BaseSHA)
+	}
+}
+
+// --- editor launch ---
+
+func (v *diffView) openInEditor(a *app) (tea.Cmd, error) {
+	if a.selectedPR == nil || a.selectedFile == "" {
 		return nil, fmt.Errorf("nothing selected")
 	}
-	worktree, err := resolveWorktree(m.cfg, m.selectedPR.Repo, m.selectedPR.Number)
+	worktree, err := resolveWorktree(a.cfg, a.selectedPR.Repo, a.selectedPR.Number)
 	if err != nil {
 		return nil, err
 	}
 	line := 1
-	if m.hunkIdx >= 0 && m.hunkIdx < len(m.currentHunks) {
-		if _, n := hunkLines(m.currentHunks[m.hunkIdx].Header); n > 0 {
+	if v.hunkIdx >= 0 && v.hunkIdx < len(v.hunks) {
+		if _, n := hunkLines(v.hunks[v.hunkIdx].Header); n > 0 {
 			line = n
 		}
 	}
-	prKey := fmt.Sprintf("%s#%d", m.selectedPR.Repo, m.selectedPR.Number)
-	m.statusMsg = fmt.Sprintf("opening %s:%d in %s", m.selectedFile, line, worktree)
-	return launchEditor(m.cfg, worktree, m.selectedFile, prKey, line), nil
+	prKeyStr := fmt.Sprintf("%s#%d", a.selectedPR.Repo, a.selectedPR.Number)
+	a.statusMsg = fmt.Sprintf("opening %s:%d in %s", a.selectedFile, line, worktree)
+	return launchEditor(a.cfg, worktree, a.selectedFile, prKeyStr, line), nil
 }
 
-// updateDiffNotingKeys handles keys while the note textarea is focused.
-func (m *model) updateDiffNotingKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+// --- key handling ---
+
+func (v *diffView) updateNotingKeys(a *app, msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
 	case "esc":
-		m.noting = false
-		m.noteInput.Blur()
-		m.restoreDiffSize()
-		return m, nil
+		v.noting = false
+		v.noteInput.Blur()
+		v.restoreSize(a)
+		return nil
 	case "ctrl+d":
-		body := strings.TrimSpace(m.noteInput.Value())
-		m.noting = false
-		m.noteInput.Blur()
-		m.restoreDiffSize()
+		body := strings.TrimSpace(v.noteInput.Value())
+		v.noting = false
+		v.noteInput.Blur()
+		v.restoreSize(a)
 		if body != "" {
-			if err := m.brain.SaveNote(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile, m.noteLineNo, m.noteLineHash, body); err != nil {
-				m.statusMsg = "save note: " + err.Error()
+			if err := a.brain.SaveNote(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile, v.noteLineNo, v.noteLineHash, body); err != nil {
+				a.statusMsg = "save note: " + err.Error()
 			} else {
-				m.currentNotes = m.brain.NotesForFile(m.selectedPR.Repo, m.selectedPR.Number, m.selectedFile)
-				m.redrawDiff()
+				v.notes = a.brain.NotesForFile(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile)
+				v.redraw()
 			}
 		}
-		return m, nil
+		return nil
 	}
 	var cmd tea.Cmd
-	m.noteInput, cmd = m.noteInput.Update(msg)
-	return m, cmd
+	v.noteInput, cmd = v.noteInput.Update(msg)
+	return cmd
 }
 
-// updateDiffKeys handles keys in the diff view (not noting mode).
-func (m *model) updateDiffKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (v *diffView) updateKeys(a *app, msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
 	case "ctrl+c", "q":
-		return m, tea.Quit
-	case "esc":
-		m.view = viewFiles
-		m.rebuildFileItems()
-		m.rebuildPRItems()
-		return m, nil
+		return tea.Quit
+	case "esc", "h", "left":
+		a.activeView = viewFiles
+		a.files.rebuild(a)
+		a.prs.rebuild(a)
+		return nil
 	case "n", "down", "tab":
-		if len(m.currentHunks) > 0 && m.hunkIdx < len(m.currentHunks)-1 {
-			m.hunkIdx++
-			m.redrawDiff()
-			m.jumpToCurrentHunk()
+		if len(v.hunks) > 0 && v.hunkIdx < len(v.hunks)-1 {
+			v.hunkIdx++
+			v.redraw()
+			v.jumpToHunk()
 		}
-		return m, nil
+		return nil
 	case "p", "up", "shift+tab":
-		if m.hunkIdx > 0 {
-			m.hunkIdx--
-			m.redrawDiff()
-			m.jumpToCurrentHunk()
+		if v.hunkIdx > 0 {
+			v.hunkIdx--
+			v.redraw()
+			v.jumpToHunk()
 		}
-		return m, nil
+		return nil
 	case " ", "x":
-		if m.hunkIdx >= 0 && m.hunkIdx < len(m.currentHunks) {
-			h := m.currentHunks[m.hunkIdx]
-			if m.currentMarks == nil {
-				m.currentMarks = map[string]bool{}
+		if v.hunkIdx >= 0 && v.hunkIdx < len(v.hunks) {
+			h := v.hunks[v.hunkIdx]
+			if v.marks == nil {
+				v.marks = map[string]bool{}
 			}
-			if m.currentMarks[h.Hash] {
-				delete(m.currentMarks, h.Hash)
+			if v.marks[h.Hash] {
+				delete(v.marks, h.Hash)
 			} else {
-				m.currentMarks[h.Hash] = true
+				v.marks[h.Hash] = true
 			}
-			m.saveMarks()
-			if m.hunkIdx < len(m.currentHunks)-1 {
-				m.hunkIdx++
+			v.saveMarks(a)
+			if v.hunkIdx < len(v.hunks)-1 {
+				v.hunkIdx++
 			}
-			m.redrawDiff()
-			m.jumpToCurrentHunk()
+			v.redraw()
+			v.jumpToHunk()
 		}
-		return m, nil
-	case "h", "left":
-		m.view = viewFiles
-		m.rebuildFileItems()
-		m.rebuildPRItems()
-		return m, nil
+		return nil
 	case "m":
-		if m.currentMarks == nil {
-			m.currentMarks = map[string]bool{}
+		if v.marks == nil {
+			v.marks = map[string]bool{}
 		}
-		for _, h := range m.currentHunks {
-			m.currentMarks[h.Hash] = true
+		for _, h := range v.hunks {
+			v.marks[h.Hash] = true
 		}
-		m.saveMarks()
-		m.redrawDiff()
-		m.jumpToCurrentHunk()
-		return m, nil
+		v.saveMarks(a)
+		v.redraw()
+		v.jumpToHunk()
+		return nil
 	case "enter", "right":
-		if m.allHunksMarked() {
-			m.view = viewFiles
-			m.rebuildFileItems()
-			m.rebuildPRItems()
+		if v.allMarked() {
+			a.activeView = viewFiles
+			a.files.rebuild(a)
+			a.prs.rebuild(a)
 		}
-		return m, nil
+		return nil
 	case "j":
-		m.moveCursor(1)
-		return m, nil
+		v.moveCursor(1)
+		return nil
 	case "k":
-		m.moveCursor(-1)
-		return m, nil
+		v.moveCursor(-1)
+		return nil
 	case "u":
-		m.currentMarks = map[string]bool{}
-		m.saveMarks()
-		m.redrawDiff()
-		m.hunkIdx = 0
-		m.jumpToCurrentHunk()
-		m.statusMsg = "cleared marks on " + m.selectedFile
-		return m, nil
+		v.marks = map[string]bool{}
+		v.saveMarks(a)
+		v.redraw()
+		v.hunkIdx = 0
+		v.jumpToHunk()
+		a.statusMsg = "cleared marks on " + a.selectedFile
+		return nil
 	case "d":
-		if m.catchUpOldHead == "" {
-			return m, nil
+		if v.catchUpOldHead == "" {
+			return nil
 		}
-		fc, ok := m.currentFile()
+		fc, ok := a.currentFile()
 		if !ok {
-			return m, nil
+			return nil
 		}
-		if m.catchUpMode {
-			m.catchUpMode = false
-			m.currentHunks = parseHunks(fc.Patch)
-			m.currentMarks = m.brain.HunkMarks(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
-			m.hunkIdx = firstUnmarked(m.currentHunks, m.currentMarks)
-			m.statusMsg = "full diff  (d: catch-up diff)"
+		if v.catchUpMode {
+			v.catchUpMode = false
+			v.hunks = parseHunks(fc.Patch)
+			v.marks = a.brain.HunkMarks(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
+			v.hunkIdx = firstUnmarked(v.hunks, v.marks)
+			a.statusMsg = "full diff  (d: catch-up diff)"
 		} else {
-			m.catchUpMode = true
-			m.currentHunks = parseHunks(m.catchUpPatch)
-			m.currentMarks = m.brain.HunkMarks(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
-			m.hunkIdx = firstUnmarked(m.currentHunks, m.currentMarks)
-			m.statusMsg = fmt.Sprintf("catch-up [%s]: changes since %s  (d: full diff)", m.catchUpClass, shortSHA(m.catchUpOldHead))
+			v.catchUpMode = true
+			v.hunks = parseHunks(v.catchUpPatch)
+			v.marks = a.brain.HunkMarks(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
+			v.hunkIdx = firstUnmarked(v.hunks, v.marks)
+			a.statusMsg = fmt.Sprintf("catch-up [%s]: changes since %s  (d: full diff)", v.catchUpClass, shortSHA(v.catchUpOldHead))
 		}
-		m.redrawDiff()
-		m.jumpToCurrentHunk()
-		return m, nil
+		v.redraw()
+		v.jumpToHunk()
+		return nil
 	case "c":
-		lineNo := m.cursorFileLine()
+		lineNo := v.cursorFileLine()
 		if lineNo == 0 {
-			m.statusMsg = "cursor not on a file line"
-			return m, nil
+			a.statusMsg = "cursor not on a file line"
+			return nil
 		}
-		m.noting = true
-		m.noteLineNo = lineNo
-		m.noteLineHash = m.cursorLineHash(lineNo)
-		m.noteInput.Reset()
-		return m, m.noteInput.Focus()
+		v.noting = true
+		v.noteLineNo = lineNo
+		v.noteLineHash = v.cursorLineHash(lineNo)
+		v.noteInput.Reset()
+		return v.noteInput.Focus()
 	case "o":
-		cmd, err := m.openInEditor()
+		cmd, err := v.openInEditor(a)
 		if err != nil {
-			m.statusMsg = "open: " + err.Error()
-			return m, nil
+			a.statusMsg = "open: " + err.Error()
+			return nil
 		}
-		return m, cmd
+		return cmd
 	}
-	// Fall through to let the viewport handle scrolling keys.
 	var cmd tea.Cmd
-	m.diff, cmd = m.diff.Update(msg)
-	return m, cmd
+	v.vp, cmd = v.vp.Update(msg)
+	return cmd
+}
+
+func (v *diffView) restoreSize(a *app) {
+	h, padV := appStyle.GetFrameSize()
+	v.vp.Width = a.width - h
+	v.vp.Height = a.height - padV - 1
+}
+
+func firstUnmarked(hunks []Hunk, marks map[string]bool) int {
+	for i, h := range hunks {
+		if !marks[h.Hash] {
+			return i
+		}
+	}
+	return 0
 }

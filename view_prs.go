@@ -2,20 +2,89 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
-func (m model) viewPRs() string {
-	return m.prs.View()
+// --- prsView ---
+
+type prsView struct {
+	list list.Model
 }
 
-// mergePRs appends PRs whose (repo, number) aren't already in m.allPRs and
-// returns just the newly-added ones, so callers can kick off file prefetch
-// without redundantly re-fetching PRs already loaded.
-func (m *model) mergePRs(prs []PR) []PR {
-	seen := make(map[string]bool, len(m.allPRs))
-	for _, p := range m.allPRs {
+func newPRsView() prsView {
+	l := list.New(nil, compactDelegate(), 0, 0)
+	return prsView{list: l}
+}
+
+func (v *prsView) Resize(w, h int) { v.list.SetSize(w, h) }
+
+func (v *prsView) View(a *app) string { return v.list.View() }
+
+func (v *prsView) Footer(a *app) string {
+	return "l/enter: open  s: scrutiny  h/esc: back to todo  q: quit"
+}
+
+func (v *prsView) Update(a *app, msg tea.Msg) tea.Cmd {
+	key, isKey := msg.(tea.KeyMsg)
+	if !isKey {
+		return v.delegate(msg)
+	}
+
+	filtering := v.list.FilterState() == list.Filtering
+
+	switch key.String() {
+	case "ctrl+c", "q":
+		if !filtering {
+			return tea.Quit
+		}
+	case "s":
+		if !filtering {
+			if it, ok := v.list.SelectedItem().(prItem); ok {
+				on := !it.scrutinized
+				a.brain.SetScrutiny(it.pr.Repo, it.pr.Number, on)
+				v.rebuild(a)
+				if on {
+					a.statusMsg = fmt.Sprintf("scrutiny ON for %s#%d — full diffs, no catch-up shortcuts", it.pr.Repo, it.pr.Number)
+				} else {
+					a.statusMsg = fmt.Sprintf("scrutiny OFF for %s#%d", it.pr.Repo, it.pr.Number)
+				}
+			}
+			return nil
+		}
+	case "esc", "h", "left":
+		if key.String() == "h" && filtering {
+			break
+		}
+		a.activeView = viewTodo
+		return nil
+	case "enter", "l", "right":
+		if key.String() == "l" && filtering {
+			break
+		}
+		if it, ok := v.list.SelectedItem().(prItem); ok {
+			return a.openPR(it.pr)
+		}
+	}
+	return v.delegate(msg)
+}
+
+func (v *prsView) delegate(msg tea.Msg) tea.Cmd {
+	prev := v.list.Index()
+	var cmd tea.Cmd
+	v.list, cmd = v.list.Update(msg)
+	skipSectionHeaders(&v.list, prev)
+	return cmd
+}
+
+// mergePRs appends PRs whose (repo, number) aren't already in a.allPRs
+// and returns just the newly-added ones, so callers can kick off file
+// prefetch without redundantly re-fetching PRs already loaded.
+func mergePRs(a *app, prs []PR) []PR {
+	seen := make(map[string]bool, len(a.allPRs))
+	for _, p := range a.allPRs {
 		seen[prKey(p.Repo, p.Number)] = true
 	}
 	var added []PR
@@ -25,41 +94,36 @@ func (m *model) mergePRs(prs []PR) []PR {
 			continue
 		}
 		seen[k] = true
-		m.allPRs = append(m.allPRs, p)
+		a.allPRs = append(a.allPRs, p)
 		added = append(added, p)
 	}
 	return added
 }
 
-func (m *model) rebuildPRItems() {
-	// Remember which PR the cursor is on so rebuild doesn't jump it.
+func (v *prsView) rebuild(a *app) {
 	var savedKey string
-	if sel, ok := m.prs.SelectedItem().(prItem); ok {
+	if sel, ok := v.list.SelectedItem().(prItem); ok {
 		savedKey = prKey(sel.pr.Repo, sel.pr.Number)
 	}
 
 	var inProgress, untouched []prItem
-	for _, pr := range m.allPRs {
-		it := prItem{pr: pr, noteCount: m.brain.NoteCountForPR(pr.Repo, pr.Number), scrutinized: m.brain.IsScrutinized(pr.Repo, pr.Number)}
+	for _, pr := range a.allPRs {
+		it := prItem{pr: pr, noteCount: a.brain.NoteCountForPR(pr.Repo, pr.Number), scrutinized: a.brain.IsScrutinized(pr.Repo, pr.Number)}
 		// A PR is "in progress" if the brain has any marks for it, even
 		// before we've fetched its file list. This keeps already-touched
 		// PRs from popping between buckets during startup prefetch.
-		looked := m.brain.HasAnyMarks(pr.Repo, pr.Number)
-		if files, ok := m.prFiles[prKey(pr.Repo, pr.Number)]; ok {
-			unseen := m.brain.UnseenCount(pr.Repo, pr.Number, files)
+		looked := a.brain.HasAnyMarks(pr.Repo, pr.Number)
+		if files, ok := a.prFiles[prKey(pr.Repo, pr.Number)]; ok {
+			unseen := a.brain.UnseenCount(pr.Repo, pr.Number, files)
 			if unseen == 0 {
 				it.summary = "✓ caught up"
 			} else {
 				it.summary = fmt.Sprintf("%d new", unseen)
 			}
-			// Show catch-up session progress if one exists.
-			if session := m.brain.ActiveCatchUp(pr.Repo, pr.Number); session != nil {
-				remaining := session.FilesTotal - session.FilesDone
+			if session := a.brain.ActiveCatchUp(pr.Repo, pr.Number); session != nil {
 				it.summary += fmt.Sprintf(", ↻ %d/%d", session.FilesDone, session.FilesTotal)
-				_ = remaining
 			} else {
-				// No session yet — count files needing catch-up.
-				reviewedStates := m.brain.AllFileReviewedStates(pr.Repo, pr.Number)
+				reviewedStates := a.brain.AllFileReviewedStates(pr.Repo, pr.Number)
 				catchUpCount := 0
 				for _, f := range files {
 					if s := reviewedStates[f.Path]; s.HeadSHA != "" && (s.HeadSHA != pr.HeadSHA || s.BaseSHA != pr.BaseSHA) {
@@ -93,15 +157,47 @@ func (m *model) rebuildPRItems() {
 			items = append(items, it)
 		}
 	}
-	m.prs.SetItems(items)
+	v.list.SetItems(items)
 	if savedKey != "" {
 		for i, it := range items {
 			if pi, ok := it.(prItem); ok && prKey(pi.pr.Repo, pi.pr.Number) == savedKey {
-				m.prs.Select(i)
+				v.list.Select(i)
 				break
 			}
 		}
 	}
+
 	// Todo list is a filtered view over the same data — rebuild in lockstep.
-	m.rebuildTodoItems()
+	a.todo.rebuild(a)
 }
+
+func (v *prsView) filtering() bool { return v.list.FilterState() == list.Filtering }
+
+// --- prItem ---
+
+type prItem struct {
+	pr          PR
+	summary     string
+	noteCount   int
+	scrutinized bool
+}
+
+func (i prItem) Title() string {
+	head := fmt.Sprintf("%s#%d  %s  @%s", i.pr.Repo, i.pr.Number, i.pr.Title, i.pr.Author)
+	if i.scrutinized {
+		head = "[S] " + head
+	}
+	var parts []string
+	if i.summary != "" {
+		parts = append(parts, i.summary)
+	}
+	if i.noteCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d notes", i.noteCount))
+	}
+	if len(parts) > 0 {
+		head += "  (" + strings.Join(parts, ", ") + ")"
+	}
+	return head
+}
+func (i prItem) Description() string { return "" }
+func (i prItem) FilterValue() string { return i.Title() }

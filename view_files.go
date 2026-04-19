@@ -5,56 +5,152 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
 const descPaneHeight = 8
 
-// sizeFilesView splits available height between the file list and description pane.
-func (m *model) sizeFilesView(w, totalH int) {
-	// 1 line for tab bar, 1 line for the separator.
+// --- filesView ---
+
+type fileTab int
+
+const (
+	tabFiles fileTab = iota
+	tabNotes
+)
+
+type filesView struct {
+	list         list.Model
+	infoVP       viewport.Model
+	descVP       viewport.Model
+	tab          fileTab
+	loadingFiles bool
+}
+
+func newFilesView() filesView {
+	l := list.New(nil, compactDelegate(), 0, 0)
+	l.Title = "Files"
+	return filesView{
+		list:   l,
+		infoVP: viewport.New(0, 0),
+		descVP: viewport.New(0, 0),
+	}
+}
+
+// Resize splits available height between the file list and description
+// pane. Width is shared.
+func (v *filesView) Resize(w, totalH int) {
 	descH := descPaneHeight
-	filesH := totalH - descH - 2
+	filesH := totalH - descH - 2 // tab bar + separator
 	if filesH < 4 {
 		filesH = 4
 		descH = totalH - filesH - 2
 	}
-	m.files.SetSize(w, filesH)
-	m.descVP.Width = w
-	m.descVP.Height = descH
+	v.list.SetSize(w, filesH)
+	v.descVP.Width = w
+	v.descVP.Height = descH
+	v.infoVP.Width = w
+	v.infoVP.Height = totalH
 }
 
-func (m model) viewFiles() string {
-	body := m.tabBar()
-	switch m.fileTab {
+func (v *filesView) View(a *app) string {
+	body := v.tabBar()
+	switch v.tab {
 	case tabFiles:
-		body += m.files.View()
+		body += v.list.View()
 	case tabNotes:
-		body += m.infoVP.View()
-		return body // notes tab takes the full space, no description pane
+		body += v.infoVP.View()
+		return body
 	}
-	// Description pane below the file list.
-	body += "\n" + lipgloss.NewStyle().Faint(true).Render(strings.Repeat("─", m.descVP.Width)) + "\n"
-	body += m.descVP.View()
+	body += "\n" + lipgloss.NewStyle().Faint(true).Render(strings.Repeat("─", v.descVP.Width)) + "\n"
+	body += v.descVP.View()
 	return body
 }
 
-func (m *model) rebuildFileItems() {
-	if m.selectedPR == nil {
+func (v *filesView) Footer(a *app) string {
+	return "1: files  2: notes  l/enter: open  h/esc: back  q: quit"
+}
+
+func (v *filesView) Update(a *app, msg tea.Msg) tea.Cmd {
+	key, isKey := msg.(tea.KeyMsg)
+	if !isKey {
+		return v.delegate(msg)
+	}
+
+	filtering := v.list.FilterState() == list.Filtering
+
+	if !filtering {
+		switch key.String() {
+		case "1":
+			v.tab = tabFiles
+			return nil
+		case "2":
+			v.tab = tabNotes
+			v.rebuildInfoVP(a)
+			return nil
+		}
+	}
+
+	switch key.String() {
+	case "ctrl+c", "q":
+		if !filtering {
+			return tea.Quit
+		}
+	case "esc", "h", "left":
+		if key.String() == "h" && filtering {
+			break
+		}
+		v.tab = tabFiles
+		if a.listViewOrigin == viewTodo {
+			a.activeView = viewTodo
+		} else {
+			a.activeView = viewPRs
+		}
+		return nil
+	case "enter", "l", "right":
+		if key.String() == "l" && filtering {
+			break
+		}
+		if v.tab != tabFiles {
+			break
+		}
+		if it, ok := v.list.SelectedItem().(fileItem); ok {
+			return a.openFile(it.fc)
+		}
+	}
+	return v.delegate(msg)
+}
+
+func (v *filesView) delegate(msg tea.Msg) tea.Cmd {
+	var cmd tea.Cmd
+	if v.tab != tabFiles {
+		v.infoVP, cmd = v.infoVP.Update(msg)
+		return cmd
+	}
+	prev := v.list.Index()
+	v.list, cmd = v.list.Update(msg)
+	skipSectionHeaders(&v.list, prev)
+	return cmd
+}
+
+func (v *filesView) rebuild(a *app) {
+	if a.selectedPR == nil {
 		return
 	}
 	var savedPath string
-	if sel, ok := m.files.SelectedItem().(fileItem); ok {
+	if sel, ok := v.list.SelectedItem().(fileItem); ok {
 		savedPath = sel.fc.Path
 	}
-	files := m.prFiles[prKey(m.selectedPR.Repo, m.selectedPR.Number)]
-	reviewedStates := m.brain.AllFileReviewedStates(m.selectedPR.Repo, m.selectedPR.Number)
+	files := a.prFiles[prKey(a.selectedPR.Repo, a.selectedPR.Number)]
+	reviewedStates := a.brain.AllFileReviewedStates(a.selectedPR.Repo, a.selectedPR.Number)
 	var unseen, partial, seen []fileItem
 	for _, fc := range files {
-		status := m.brain.Status(m.selectedPR.Repo, m.selectedPR.Number, fc)
-		nc := m.brain.NoteCountForFile(m.selectedPR.Repo, m.selectedPR.Number, fc.Path)
+		status := a.brain.Status(a.selectedPR.Repo, a.selectedPR.Number, fc)
+		nc := a.brain.NoteCountForFile(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
 		s := reviewedStates[fc.Path]
-		catchUp := s.HeadSHA != "" && (s.HeadSHA != m.selectedPR.HeadSHA || s.BaseSHA != m.selectedPR.BaseSHA)
+		catchUp := s.HeadSHA != "" && (s.HeadSHA != a.selectedPR.HeadSHA || s.BaseSHA != a.selectedPR.BaseSHA)
 		fi := fileItem{fc: fc, status: status, noteCount: nc, needsCatchUp: catchUp}
 		switch status {
 		case StatusUnseen:
@@ -91,11 +187,11 @@ func (m *model) rebuildFileItems() {
 			items = append(items, fi)
 		}
 	}
-	m.files.SetItems(items)
+	v.list.SetItems(items)
 	if savedPath != "" {
 		for i, it := range items {
 			if fi, ok := it.(fileItem); ok && fi.fc.Path == savedPath {
-				m.files.Select(i)
+				v.list.Select(i)
 				break
 			}
 		}
@@ -107,7 +203,7 @@ var (
 	tabInactiveStyle = lipgloss.NewStyle().Faint(true)
 )
 
-func (m *model) tabBar() string {
+func (v *filesView) tabBar() string {
 	tabs := []struct {
 		label string
 		t     fileTab
@@ -117,7 +213,7 @@ func (m *model) tabBar() string {
 	}
 	var parts []string
 	for _, tab := range tabs {
-		if tab.t == m.fileTab {
+		if tab.t == v.tab {
 			parts = append(parts, tabActiveStyle.Render(tab.label))
 		} else {
 			parts = append(parts, tabInactiveStyle.Render(tab.label))
@@ -127,38 +223,38 @@ func (m *model) tabBar() string {
 }
 
 // rebuildDescVP populates the always-visible description pane.
-func (m *model) rebuildDescVP() {
-	if m.selectedPR == nil {
+func (v *filesView) rebuildDescVP(a *app) {
+	if a.selectedPR == nil {
 		return
 	}
-	body := m.selectedPR.Body
+	body := a.selectedPR.Body
 	if body == "" {
 		body = "(no description)"
 	}
 	content := fmt.Sprintf("%s#%d  %s  @%s\n\n%s",
-		m.selectedPR.Repo, m.selectedPR.Number, m.selectedPR.Title, m.selectedPR.Author, body)
-	m.descVP.SetContent(content)
-	m.descVP.GotoTop()
+		a.selectedPR.Repo, a.selectedPR.Number, a.selectedPR.Title, a.selectedPR.Author, body)
+	v.descVP.SetContent(content)
+	v.descVP.GotoTop()
 }
 
-func (m *model) rebuildInfoVP() {
-	if m.selectedPR == nil {
+func (v *filesView) rebuildInfoVP(a *app) {
+	if a.selectedPR == nil {
 		return
 	}
 	var content string
-	switch m.fileTab {
+	switch v.tab {
 	case tabNotes:
-		notes := m.brain.NotesForPR(m.selectedPR.Repo, m.selectedPR.Number)
+		notes := a.brain.NotesForPR(a.selectedPR.Repo, a.selectedPR.Number)
 		if len(notes) == 0 {
 			content = "(no notes)"
 		} else {
-			key := prKey(m.selectedPR.Repo, m.selectedPR.Number)
+			key := prKey(a.selectedPR.Repo, a.selectedPR.Number)
 			fileLinesCache := map[string][]string{}
 			getFileLines := func(path string) []string {
 				if cached, ok := fileLinesCache[path]; ok {
 					return cached
 				}
-				lines := m.patchNewFileLines(key, path)
+				lines := patchNewFileLines(a, key, path)
 				fileLinesCache[path] = lines
 				return lines
 			}
@@ -173,7 +269,6 @@ func (m *model) rebuildInfoVP() {
 					curPath = n.Path
 					b.WriteString(lipgloss.NewStyle().Bold(true).Render(curPath) + "\n")
 				}
-				// Context lines around the note.
 				fLines := getFileLines(n.Path)
 				idx := n.LineNo - 1
 				ctxStart := idx - 2
@@ -198,15 +293,17 @@ func (m *model) rebuildInfoVP() {
 			content = b.String()
 		}
 	}
-	m.infoVP.SetContent(content)
-	m.infoVP.GotoTop()
+	v.infoVP.SetContent(content)
+	v.infoVP.GotoTop()
 }
 
-// patchNewFileLines reconstructs the new-file lines visible in a patch's hunks.
-// Returns a sparse slice indexed by 1-based line number. Lines not covered by
-// any hunk are empty strings (best effort — we may not have the full file).
-func (m *model) patchNewFileLines(key, path string) []string {
-	files := m.prFiles[key]
+func (v *filesView) filtering() bool { return v.list.FilterState() == list.Filtering }
+
+// patchNewFileLines reconstructs the new-file lines visible in a patch's
+// hunks. Returns a sparse slice indexed by 1-based line number. Lines
+// not covered by any hunk are empty strings.
+func patchNewFileLines(a *app, key, path string) []string {
+	files := a.prFiles[key]
 	var patch string
 	for _, f := range files {
 		if f.Path == path {
@@ -218,7 +315,6 @@ func (m *model) patchNewFileLines(key, path string) []string {
 		return nil
 	}
 	hunks := parseHunks(patch)
-	// Find max line to size the slice.
 	maxLine := 0
 	for _, h := range hunks {
 		r := parseHunkRange(h.Header)
@@ -241,7 +337,7 @@ func (m *model) patchNewFileLines(key, path string) []string {
 			}
 			switch line[0] {
 			case '-':
-				// deleted from old file, not in new
+				// deleted from old, not in new
 			case '+':
 				if cur < len(lines) {
 					lines[cur] = line[1:]
@@ -261,3 +357,25 @@ func (m *model) patchNewFileLines(key, path string) []string {
 	}
 	return lines
 }
+
+// --- fileItem ---
+
+type fileItem struct {
+	fc           FileChange
+	status       FileStatus
+	noteCount    int
+	needsCatchUp bool // PR head moved since this file was last reviewed
+}
+
+func (i fileItem) Title() string {
+	s := fmt.Sprintf("%s %s  +%d -%d", i.status.Glyph(), i.fc.Path, i.fc.Additions, i.fc.Deletions)
+	if i.needsCatchUp {
+		s += "  ↻"
+	}
+	if i.noteCount > 0 {
+		s += fmt.Sprintf("  (%d notes)", i.noteCount)
+	}
+	return s
+}
+func (i fileItem) Description() string { return "" }
+func (i fileItem) FilterValue() string { return i.fc.Path }
