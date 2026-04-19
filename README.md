@@ -8,8 +8,22 @@ can live in across many PRs and many sessions.
 ## Build
 
 ```
-go build ./...
+make build          # → bin/rhodium
+make test           # go test ./...
+make vet            # go vet ./...
+make run            # build + run the TUI
+make install        # go install to $GOBIN
+make clean          # remove bin/
 ```
+
+Or directly, without the Makefile:
+
+```
+go build -o bin/rhodium .
+```
+
+(`go build ./...` without `-o` drops the binary in the repo root, which is
+why `bin/` is the conventional target and is gitignored.)
 
 ## Configure
 

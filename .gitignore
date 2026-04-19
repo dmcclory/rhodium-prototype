@@ -1,0 +1,11 @@
+bin/
+rhodium
+rhodium2
+
+# editor
+.vscode/
+.idea/
+*.swp
+
+# os
+.DS_Store

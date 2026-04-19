@@ -92,8 +92,12 @@ func shellJoin(args []string) string {
 }
 
 // nvimPluginPath returns the absolute path to rhodium.lua if we can find one.
-// Precedence: $RHODIUM_NVIM_PLUGIN, then editor/nvim/rhodium.lua beside the
-// running binary. Empty string means "rely on user's runtimepath."
+// Precedence:
+//   1. $RHODIUM_NVIM_PLUGIN
+//   2. editor/nvim/rhodium.lua beside the running binary
+//   3. editor/nvim/rhodium.lua one level up (for `bin/rhodium` layouts)
+//
+// Empty string means "rely on user's runtimepath."
 func nvimPluginPath() string {
 	if p := os.Getenv("RHODIUM_NVIM_PLUGIN"); p != "" {
 		return p
@@ -102,9 +106,14 @@ func nvimPluginPath() string {
 	if err != nil {
 		return ""
 	}
-	candidate := filepath.Join(filepath.Dir(exe), "editor", "nvim", "rhodium.lua")
-	if _, err := os.Stat(candidate); err == nil {
-		return candidate
+	dir := filepath.Dir(exe)
+	for _, candidate := range []string{
+		filepath.Join(dir, "editor", "nvim", "rhodium.lua"),
+		filepath.Join(dir, "..", "editor", "nvim", "rhodium.lua"),
+	} {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
 	}
 	return ""
 }
