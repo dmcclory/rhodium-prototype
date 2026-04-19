@@ -26,6 +26,8 @@ func runCLI(args []string) error {
 		return cmdMark(args[1:], false)
 	case "note":
 		return cmdNote(args[1:])
+	case "resolve":
+		return cmdResolve(args[1:])
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -60,10 +62,12 @@ Usage:
   rhodium mark <owner/repo#N> <file> <hunk-hash>    mark a hunk as reviewed
   rhodium unmark <owner/repo#N> <file> <hunk-hash>  unmark a hunk
   rhodium note <owner/repo#N> <file> <line> <body>  add a note (body "-" reads from stdin)
+  rhodium resolve <note-id>...                      mark one or more notes resolved
 
 Flags:
   --json    emit JSON (notes, todo, state)
-  --sync    (todo only) refresh the PR cache from GitHub before printing`)
+  --sync    (todo only) refresh the PR cache from GitHub before printing
+  --all     (notes only) include resolved notes`)
 }
 
 var prRefRE = regexp.MustCompile(`^([^/]+/[^/#]+)[#/](\d+)$`)
@@ -85,6 +89,7 @@ func cmdNotes(args []string) error {
 	flags, pos := splitFlags(args)
 	fs := flag.NewFlagSet("notes", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit JSON")
+	all := fs.Bool("all", false, "include resolved notes")
 	if err := fs.Parse(flags); err != nil {
 		return err
 	}
@@ -101,7 +106,11 @@ func cmdNotes(args []string) error {
 	}
 	defer brain.Close()
 
-	notes := brain.NotesForPR(repo, num)
+	filter := NotesActive
+	if *all {
+		filter = NotesAll
+	}
+	notes := brain.NotesForPR(repo, num, filter)
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -122,10 +131,39 @@ func cmdNotes(args []string) error {
 			fmt.Println(n.Path)
 			curPath = n.Path
 		}
-		fmt.Printf("  line %d  (%s)\n", n.LineNo, n.CreatedAt)
+		marker := ""
+		if n.ResolvedAt != "" {
+			marker = " ✓ resolved " + n.ResolvedAt
+		}
+		fmt.Printf("  [#%d] line %d  (%s)%s\n", n.ID, n.LineNo, n.CreatedAt, marker)
 		for _, bl := range strings.Split(strings.TrimRight(n.Body, "\n"), "\n") {
 			fmt.Printf("    %s\n", bl)
 		}
+	}
+	return nil
+}
+
+// cmdResolve marks one or more notes as resolved by ID.
+func cmdResolve(args []string) error {
+	_, pos := splitFlags(args)
+	if len(pos) == 0 {
+		return fmt.Errorf("usage: rhodium resolve <note-id>...")
+	}
+	brain, err := LoadBrain()
+	if err != nil {
+		return err
+	}
+	defer brain.Close()
+
+	for _, s := range pos {
+		id, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return fmt.Errorf("note id must be an integer: %q", s)
+		}
+		if err := brain.ResolveNote(id); err != nil {
+			return fmt.Errorf("resolve #%d: %w", id, err)
+		}
+		fmt.Printf("resolved #%d\n", id)
 	}
 	return nil
 }

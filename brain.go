@@ -82,13 +82,14 @@ func LoadBrain() (*Brain, error) {
 			PRIMARY KEY (repo, number)
 		);
 		CREATE TABLE IF NOT EXISTS notes (
-			id         INTEGER PRIMARY KEY AUTOINCREMENT,
-			pr_key     TEXT    NOT NULL,
-			path       TEXT    NOT NULL,
-			line_no    INTEGER NOT NULL,
-			line_hash  TEXT    NOT NULL,
-			body       TEXT    NOT NULL,
-			created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			pr_key      TEXT    NOT NULL,
+			path        TEXT    NOT NULL,
+			line_no     INTEGER NOT NULL,
+			line_hash   TEXT    NOT NULL,
+			body        TEXT    NOT NULL,
+			created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+			resolved_at TEXT
 		);
 		CREATE INDEX IF NOT EXISTS idx_notes_file ON notes (pr_key, path);
 
@@ -121,6 +122,15 @@ func LoadBrain() (*Brain, error) {
 	`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate brain db: %w", err)
+	}
+	// Migrate older DBs that predate the resolved_at column.
+	var haveResolvedAt int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('notes') WHERE name = 'resolved_at'`).Scan(&haveResolvedAt)
+	if haveResolvedAt == 0 {
+		if _, err := db.Exec(`ALTER TABLE notes ADD COLUMN resolved_at TEXT`); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("migrate notes.resolved_at: %w", err)
+		}
 	}
 	return &Brain{db: db}, nil
 }
@@ -317,18 +327,29 @@ func (b *Brain) SetPRCache(prs []PR) error {
 }
 
 type Note struct {
-	ID        int64  `json:"id"`
-	PRKey     string `json:"pr_key"`
-	Path      string `json:"path"`
-	LineNo    int    `json:"line_no"`
-	LineHash  string `json:"line_hash"`
-	Body      string `json:"body"`
-	CreatedAt string `json:"created_at"`
+	ID         int64  `json:"id"`
+	PRKey      string `json:"pr_key"`
+	Path       string `json:"path"`
+	LineNo     int    `json:"line_no"`
+	LineHash   string `json:"line_hash"`
+	Body       string `json:"body"`
+	CreatedAt  string `json:"created_at"`
+	ResolvedAt string `json:"resolved_at,omitempty"`
 }
 
-// PRKeysWithNotes returns every pr_key that has at least one note, sorted.
+// NoteFilter controls whether NotesForPR / NotesForFile / PRKeysWithNotes
+// include resolved notes. Counts always reflect Active-only so resolved
+// notes drop out of the todo dashboard.
+type NoteFilter int
+
+const (
+	NotesActive NoteFilter = iota // resolved_at IS NULL
+	NotesAll                      // active + resolved
+)
+
+// PRKeysWithNotes returns every pr_key that has at least one active note, sorted.
 func (b *Brain) PRKeysWithNotes() []string {
-	rows, err := b.db.Query(`SELECT DISTINCT pr_key FROM notes`)
+	rows, err := b.db.Query(`SELECT DISTINCT pr_key FROM notes WHERE resolved_at IS NULL`)
 	if err != nil {
 		return nil
 	}
@@ -346,22 +367,25 @@ func (b *Brain) PRKeysWithNotes() []string {
 func (b *Brain) NoteCountForPR(repo string, pr int) int {
 	key := prKey(repo, pr)
 	var count int
-	b.db.QueryRow(`SELECT COUNT(*) FROM notes WHERE pr_key = ?`, key).Scan(&count)
+	b.db.QueryRow(`SELECT COUNT(*) FROM notes WHERE pr_key = ? AND resolved_at IS NULL`, key).Scan(&count)
 	return count
 }
 
 func (b *Brain) NoteCountForFile(repo string, pr int, path string) int {
 	key := prKey(repo, pr)
 	var count int
-	b.db.QueryRow(`SELECT COUNT(*) FROM notes WHERE pr_key = ? AND path = ?`, key, path).Scan(&count)
+	b.db.QueryRow(`SELECT COUNT(*) FROM notes WHERE pr_key = ? AND path = ? AND resolved_at IS NULL`, key, path).Scan(&count)
 	return count
 }
 
-func (b *Brain) NotesForPR(repo string, pr int) []Note {
+func (b *Brain) NotesForPR(repo string, pr int, filter NoteFilter) []Note {
 	key := prKey(repo, pr)
-	rows, err := b.db.Query(
-		`SELECT id, pr_key, path, line_no, line_hash, body, created_at FROM notes WHERE pr_key = ? ORDER BY path, line_no, id`,
-		key)
+	q := `SELECT id, pr_key, path, line_no, line_hash, body, created_at, resolved_at FROM notes WHERE pr_key = ?`
+	if filter == NotesActive {
+		q += ` AND resolved_at IS NULL`
+	}
+	q += ` ORDER BY path, line_no, id`
+	rows, err := b.db.Query(q, key)
 	if err != nil {
 		return nil
 	}
@@ -369,7 +393,11 @@ func (b *Brain) NotesForPR(repo string, pr int) []Note {
 	var out []Note
 	for rows.Next() {
 		var n Note
-		if rows.Scan(&n.ID, &n.PRKey, &n.Path, &n.LineNo, &n.LineHash, &n.Body, &n.CreatedAt) == nil {
+		var resolved sql.NullString
+		if rows.Scan(&n.ID, &n.PRKey, &n.Path, &n.LineNo, &n.LineHash, &n.Body, &n.CreatedAt, &resolved) == nil {
+			if resolved.Valid {
+				n.ResolvedAt = resolved.String
+			}
 			out = append(out, n)
 		}
 	}
@@ -379,7 +407,8 @@ func (b *Brain) NotesForPR(repo string, pr int) []Note {
 func (b *Brain) NotesForFile(repo string, pr int, path string) []Note {
 	key := prKey(repo, pr)
 	rows, err := b.db.Query(
-		`SELECT id, pr_key, path, line_no, line_hash, body, created_at FROM notes WHERE pr_key = ? AND path = ? ORDER BY line_no, id`,
+		`SELECT id, pr_key, path, line_no, line_hash, body, created_at, resolved_at
+		 FROM notes WHERE pr_key = ? AND path = ? AND resolved_at IS NULL ORDER BY line_no, id`,
 		key, path)
 	if err != nil {
 		return nil
@@ -388,7 +417,11 @@ func (b *Brain) NotesForFile(repo string, pr int, path string) []Note {
 	var out []Note
 	for rows.Next() {
 		var n Note
-		if rows.Scan(&n.ID, &n.PRKey, &n.Path, &n.LineNo, &n.LineHash, &n.Body, &n.CreatedAt) == nil {
+		var resolved sql.NullString
+		if rows.Scan(&n.ID, &n.PRKey, &n.Path, &n.LineNo, &n.LineHash, &n.Body, &n.CreatedAt, &resolved) == nil {
+			if resolved.Valid {
+				n.ResolvedAt = resolved.String
+			}
 			out = append(out, n)
 		}
 	}
@@ -400,6 +433,14 @@ func (b *Brain) SaveNote(repo string, pr int, path string, lineNo int, lineHash,
 	_, err := b.db.Exec(
 		`INSERT INTO notes (pr_key, path, line_no, line_hash, body) VALUES (?, ?, ?, ?, ?)`,
 		key, path, lineNo, lineHash, body)
+	return err
+}
+
+// ResolveNote marks a note as resolved (soft delete — the row stays so
+// `rhodium notes --all` can show history). Idempotent: resolving an
+// already-resolved note is a no-op.
+func (b *Brain) ResolveNote(id int64) error {
+	_, err := b.db.Exec(`UPDATE notes SET resolved_at = datetime('now') WHERE id = ? AND resolved_at IS NULL`, id)
 	return err
 }
 

@@ -233,6 +233,41 @@ func (a *app) currentFile() (FileChange, bool) {
 	return FileChange{}, false
 }
 
+// prHasOutstandingWork reports whether pr still needs the reviewer's
+// attention: unseen, in-progress, catch-up pending, or notes attached.
+// Single source of truth for "is this PR on the todo list" — used by
+// the todo count and buildTodoItem's nil check.
+func (a *app) prHasOutstandingWork(pr PR) bool {
+	if a.brain.NoteCountForPR(pr.Repo, pr.Number) > 0 {
+		return true
+	}
+	if a.brain.ActiveCatchUp(pr.Repo, pr.Number) != nil {
+		return true
+	}
+	touched := a.brain.HasAnyMarks(pr.Repo, pr.Number) ||
+		len(a.brain.AllFileReviewedStates(pr.Repo, pr.Number)) > 0
+	if !touched {
+		return true // unseen
+	}
+	files, filesLoaded := a.prFiles[prKey(pr.Repo, pr.Number)]
+	if !filesLoaded {
+		return true // touched but files not yet loaded — assume in-progress
+	}
+	return a.brain.UnseenCount(pr.Repo, pr.Number, files) > 0
+}
+
+// outstandingPRCount is the number of PRs across all repos with work
+// left for the reviewer — drives the todo-view title.
+func (a *app) outstandingPRCount() int {
+	n := 0
+	for _, pr := range a.allPRs {
+		if a.prHasOutstandingWork(pr) {
+			n++
+		}
+	}
+	return n
+}
+
 // advanceCatchUpSession advances the active catch-up session by one file.
 func (a *app) advanceCatchUpSession() {
 	if a.catchUpSession != nil {

@@ -244,7 +244,7 @@ func (v *filesView) rebuildInfoVP(a *app) {
 	var content string
 	switch v.tab {
 	case tabNotes:
-		notes := a.brain.NotesForPR(a.selectedPR.Repo, a.selectedPR.Number)
+		notes := a.brain.NotesForPR(a.selectedPR.Repo, a.selectedPR.Number, NotesActive)
 		if len(notes) == 0 {
 			content = "(no notes)"
 		} else {

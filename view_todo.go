@@ -126,8 +126,12 @@ func (v *todoView) rebuild(a *app) {
 	}
 
 	v.list.SetItems(items)
-	total := len(actionable) + len(newPRs)
-	v.list.Title = fmt.Sprintf("Todo (%d)", total)
+	outstanding := a.outstandingPRCount()
+	if outstanding == 0 {
+		v.list.Title = "✓ All caught up"
+	} else {
+		v.list.Title = fmt.Sprintf("Todo (%d)", outstanding)
+	}
 
 	if savedKey != "" {
 		for i, it := range items {
@@ -185,6 +189,9 @@ func (i todoItem) FilterValue() string { return i.Title() }
 
 // buildTodoItem returns a todoItem for pr if it needs attention, or nil otherwise.
 func buildTodoItem(a *app, pr PR) *todoItem {
+	if !a.prHasOutstandingWork(pr) {
+		return nil
+	}
 	notes := a.brain.NoteCountForPR(pr.Repo, pr.Number)
 	cu := a.brain.ActiveCatchUp(pr.Repo, pr.Number)
 	touched := a.brain.HasAnyMarks(pr.Repo, pr.Number) ||
@@ -212,9 +219,6 @@ func buildTodoItem(a *app, pr PR) *todoItem {
 	}
 	if notes > 0 {
 		it.tags = append(it.tags, "notes")
-	}
-	if len(it.tags) == 0 {
-		return nil
 	}
 	return &it
 }
