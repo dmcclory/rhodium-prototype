@@ -162,3 +162,12 @@ type diamondClassifiedMsg struct {
 	patch   string  // the catch-up patch (f1→f2 or b2→f2 depending on view)
 	err     error
 }
+
+// pollTickMsg fires on a slow interval while a PR is selected, prompting the
+// TUI to re-read marks/notes from the brain. Primary purpose: pick up changes
+// written by an nvim running in a separate tmux pane/window.
+//
+// gen is a generation counter incremented on each openPR; stale ticks (from
+// previous PR sessions) compare unequal and are discarded, so we never have
+// more than one live tick loop.
+type pollTickMsg struct{ gen int }

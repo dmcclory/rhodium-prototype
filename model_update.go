@@ -2,9 +2,20 @@ package main
 
 import (
 	"fmt"
+	"reflect"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// pollInterval controls how often the TUI re-reads brain state to pick up
+// external mutations (e.g. an nvim instance in another tmux pane marking a
+// hunk). SQLite reads are cheap; 500ms feels snappy without being wasteful.
+const pollInterval = 500 * time.Millisecond
+
+func pollTickCmd(gen int) tea.Cmd {
+	return tea.Tick(pollInterval, func(time.Time) tea.Msg { return pollTickMsg{gen: gen} })
+}
 
 func (m *model) handlePRsLoaded(msg prsLoadedMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
@@ -144,6 +155,63 @@ func (m *model) handleBlobLoaded(msg blobLoadedMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handlePollTick re-reads the active PR's marks/notes from the brain. If
+// anything changed since the last tick we rebuild items and redraw the diff
+// so external writers (nvim in a separate tmux pane) show up. Reschedules
+// itself as long as a PR is selected.
+func (m *model) handlePollTick(msg pollTickMsg) (tea.Model, tea.Cmd) {
+	if msg.gen != m.pollGen || m.selectedPR == nil {
+		return m, nil
+	}
+	pr := *m.selectedPR
+	changed := false
+
+	if m.view == viewDiff && m.selectedFile != "" {
+		newMarks := m.brain.HunkMarks(pr.Repo, pr.Number, m.selectedFile)
+		if !reflect.DeepEqual(newMarks, m.currentMarks) {
+			m.currentMarks = newMarks
+			changed = true
+		}
+		newNotes := m.brain.NotesForFile(pr.Repo, pr.Number, m.selectedFile)
+		if !reflect.DeepEqual(newNotes, m.currentNotes) {
+			m.currentNotes = newNotes
+			changed = true
+		}
+		if changed {
+			m.redrawDiff()
+		}
+	}
+
+	// Always rebuild item lists — cheap and catches per-file status flips that
+	// don't affect the current diff buffer but change file-list glyphs.
+	m.rebuildFileItems()
+	m.rebuildPRItems()
+
+	return m, pollTickCmd(m.pollGen)
+}
+
+// handleEditorDone runs after an external editor exits. For the tea.ExecProcess
+// path this fires once the user quits nvim; for the tmux path it fires
+// immediately after spawning the pane/window. In both cases we refresh the
+// current PR's marks/notes so any changes made in nvim show up in the TUI.
+func (m *model) handleEditorDone(msg editorDoneMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		m.statusMsg = "editor: " + msg.err.Error()
+		return m, nil
+	}
+	if m.selectedPR != nil {
+		pr := *m.selectedPR
+		if m.view == viewDiff && m.selectedFile != "" {
+			m.currentMarks = m.brain.HunkMarks(pr.Repo, pr.Number, m.selectedFile)
+			m.currentNotes = m.brain.NotesForFile(pr.Repo, pr.Number, m.selectedFile)
+			m.redrawDiff()
+		}
+		m.rebuildFileItems()
+		m.rebuildPRItems()
+	}
+	return m, nil
+}
+
 func (m *model) handlePrefetchDone() (tea.Model, tea.Cmd) {
 	if len(m.freshKeys) > 0 {
 		var live []PR
@@ -256,16 +324,17 @@ func (m *model) openPR(pr PR) (tea.Model, tea.Cmd) {
 	m.catchUpSession = m.brain.ActiveCatchUp(pr.Repo, pr.Number)
 	m.view = viewFiles
 	m.rebuildDescVP()
+	m.pollGen++ // invalidate any in-flight tick from a previous PR
 	key := prKey(pr.Repo, pr.Number)
 	if _, cached := m.prFiles[key]; cached {
 		m.rebuildFileItems()
 		m.files.Title = fmt.Sprintf("Files in %s#%d", pr.Repo, pr.Number)
-		return m, nil
+		return m, pollTickCmd(m.pollGen)
 	}
 	m.loadingFiles = true
 	m.files.Title = fmt.Sprintf("Files in %s#%d (loading...)", pr.Repo, pr.Number)
 	m.files.SetItems(nil)
-	return m, loadFilesCmd(pr)
+	return m, tea.Batch(loadFilesCmd(pr), pollTickCmd(m.pollGen))
 }
 
 // delegateToWidget passes an unhandled message to the active list or viewport.

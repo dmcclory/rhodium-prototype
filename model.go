@@ -74,6 +74,11 @@ type model struct {
 
 	loadingFiles bool
 	statusMsg    string
+
+	// pollGen increments every time a PR is opened; the polling tick carries
+	// the generation it was scheduled under, so older loops stop naturally
+	// when a newer PR is selected.
+	pollGen int
 }
 
 func compactDelegate() list.DefaultDelegate {
@@ -167,6 +172,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleBlobLoaded(msg)
 	case prefetchDoneMsg:
 		return m.handlePrefetchDone()
+	case editorDoneMsg:
+		return m.handleEditorDone(msg)
+	case pollTickMsg:
+		return m.handlePollTick(msg)
 
 	case tea.KeyMsg:
 		if m.view == viewDiff && m.noting {

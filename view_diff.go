@@ -248,6 +248,28 @@ func (m *model) cursorLineHash(lineNo int) string {
 	return hashLine(lines[idx])
 }
 
+// openInEditor launches the configured editor at the current hunk's location
+// in a worktree dedicated to this PR. Returns a tea.Cmd that either suspends
+// the TUI (no tmux) or spawns a tmux pane/window.
+func (m *model) openInEditor() (tea.Cmd, error) {
+	if m.selectedPR == nil || m.selectedFile == "" {
+		return nil, fmt.Errorf("nothing selected")
+	}
+	worktree, err := resolveWorktree(m.cfg, m.selectedPR.Repo, m.selectedPR.Number)
+	if err != nil {
+		return nil, err
+	}
+	line := 1
+	if m.hunkIdx >= 0 && m.hunkIdx < len(m.currentHunks) {
+		if _, n := hunkLines(m.currentHunks[m.hunkIdx].Header); n > 0 {
+			line = n
+		}
+	}
+	prKey := fmt.Sprintf("%s#%d", m.selectedPR.Repo, m.selectedPR.Number)
+	m.statusMsg = fmt.Sprintf("opening %s:%d in %s", m.selectedFile, line, worktree)
+	return launchEditor(m.cfg, worktree, m.selectedFile, prKey, line), nil
+}
+
 // updateDiffNotingKeys handles keys while the note textarea is focused.
 func (m *model) updateDiffNotingKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
@@ -391,6 +413,13 @@ func (m *model) updateDiffKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.noteLineHash = m.cursorLineHash(lineNo)
 		m.noteInput.Reset()
 		return m, m.noteInput.Focus()
+	case "o":
+		cmd, err := m.openInEditor()
+		if err != nil {
+			m.statusMsg = "open: " + err.Error()
+			return m, nil
+		}
+		return m, cmd
 	}
 	// Fall through to let the viewport handle scrolling keys.
 	var cmd tea.Cmd

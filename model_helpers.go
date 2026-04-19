@@ -79,7 +79,7 @@ func (m model) footer() string {
 				modeHint = "  [full diff]  d: catch-up"
 			}
 		}
-		return fmt.Sprintf("hunk %d/%d  marked %d/%d%s  ↑/↓: nav  j/k: cursor  space: toggle+next  m: mark all  c: note  u: unmark  h: back", cur, total, marked, total, modeHint)
+		return fmt.Sprintf("hunk %d/%d  marked %d/%d%s  ↑/↓: nav  j/k: cursor  space: toggle+next  m: mark all  c: note  o: open in editor  u: unmark  h: back", cur, total, marked, total, modeHint)
 	case viewFiles:
 		return "1: files  2: notes  l/enter: open  h/esc: back  q: quit"
 	case viewTodo:
