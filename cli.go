@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"sort"
@@ -17,6 +18,14 @@ func runCLI(args []string) error {
 		return cmdNotes(args[1:])
 	case "todo":
 		return cmdTodo(args[1:])
+	case "state":
+		return cmdState(args[1:])
+	case "mark":
+		return cmdMark(args[1:], true)
+	case "unmark":
+		return cmdMark(args[1:], false)
+	case "note":
+		return cmdNote(args[1:])
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -44,12 +53,16 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, `rhodium — code review TUI (run with no args) and CLI
 
 Usage:
-  rhodium                        launch the TUI
-  rhodium notes <owner/repo#N>   print notes for a PR
-  rhodium todo                   global dashboard (catch-up, unseen, notes)
+  rhodium                                           launch the TUI
+  rhodium notes <owner/repo#N>                      print notes for a PR
+  rhodium todo                                      global dashboard (catch-up, unseen, notes)
+  rhodium state <owner/repo#N>                      print full review state (files, hunks, marks, notes)
+  rhodium mark <owner/repo#N> <file> <hunk-hash>    mark a hunk as reviewed
+  rhodium unmark <owner/repo#N> <file> <hunk-hash>  unmark a hunk
+  rhodium note <owner/repo#N> <file> <line> <body>  add a note (body "-" reads from stdin)
 
 Flags:
-  --json    emit JSON
+  --json    emit JSON (notes, todo, state)
   --sync    (todo only) refresh the PR cache from GitHub before printing`)
 }
 
@@ -293,3 +306,228 @@ func truncate(s string, max int) string {
 	}
 	return s[:max-1] + "…"
 }
+
+// --- state / mark / note — CLI surface consumed by the nvim plugin ---
+
+type stateHunk struct {
+	Hash    string `json:"hash"`
+	Header  string `json:"header"`
+	OldLine int    `json:"old_line"`
+	NewLine int    `json:"new_line"`
+	Marked  bool   `json:"marked"`
+}
+
+type stateFile struct {
+	Path      string      `json:"path"`
+	Status    string      `json:"status"` // unseen | partial | seen
+	Additions int         `json:"additions"`
+	Deletions int         `json:"deletions"`
+	Patch     string      `json:"patch"`
+	Hunks     []stateHunk `json:"hunks"`
+	Notes     []Note      `json:"notes"`
+}
+
+type stateOutput struct {
+	Key     string      `json:"key"`
+	Repo    string      `json:"repo"`
+	Number  int         `json:"number"`
+	Title   string      `json:"title"`
+	Author  string      `json:"author"`
+	HeadSHA string      `json:"head_sha"`
+	BaseSHA string      `json:"base_sha"`
+	Files   []stateFile `json:"files"`
+}
+
+func statusName(s FileStatus) string {
+	switch s {
+	case StatusSeen:
+		return "seen"
+	case StatusPartial:
+		return "partial"
+	default:
+		return "unseen"
+	}
+}
+
+var hunkHeaderLineRE = regexp.MustCompile(`^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
+
+func hunkLines(header string) (oldLine, newLine int) {
+	m := hunkHeaderLineRE.FindStringSubmatch(header)
+	if m == nil {
+		return 0, 0
+	}
+	oldLine, _ = strconv.Atoi(m[1])
+	newLine, _ = strconv.Atoi(m[2])
+	return
+}
+
+// cmdState prints the full review state for a PR as JSON — the nvim plugin's
+// primary source of truth. Fetches file data from gh on demand.
+func cmdState(args []string) error {
+	flags, pos := splitFlags(args)
+	fs := flag.NewFlagSet("state", flag.ContinueOnError)
+	asJSON := fs.Bool("json", true, "emit JSON (default)")
+	if err := fs.Parse(flags); err != nil {
+		return err
+	}
+	_ = asJSON // --json is accepted for symmetry; output is always JSON here
+	if len(pos) != 1 {
+		return fmt.Errorf("usage: rhodium state <owner/repo#N>")
+	}
+	repo, num, err := parsePRRef(pos[0])
+	if err != nil {
+		return err
+	}
+
+	brain, err := LoadBrain()
+	if err != nil {
+		return err
+	}
+	defer brain.Close()
+
+	files, err := listPRFiles(repo, num)
+	if err != nil {
+		return err
+	}
+
+	out := stateOutput{
+		Key:    prKey(repo, num),
+		Repo:   repo,
+		Number: num,
+	}
+	for _, p := range brain.CachedPRs() {
+		if p.Repo == repo && p.Number == num {
+			out.Title = p.Title
+			out.Author = p.Author
+			out.HeadSHA = p.HeadSHA
+			out.BaseSHA = p.BaseSHA
+			break
+		}
+	}
+
+	for _, fc := range files {
+		marks := brain.HunkMarks(repo, num, fc.Path)
+		hunks := parseHunks(fc.Patch)
+		sh := make([]stateHunk, 0, len(hunks))
+		for _, h := range hunks {
+			oldL, newL := hunkLines(h.Header)
+			sh = append(sh, stateHunk{
+				Hash:    h.Hash,
+				Header:  h.Header,
+				OldLine: oldL,
+				NewLine: newL,
+				Marked:  marks[h.Hash],
+			})
+		}
+		out.Files = append(out.Files, stateFile{
+			Path:      fc.Path,
+			Status:    statusName(brain.Status(repo, num, fc)),
+			Additions: fc.Additions,
+			Deletions: fc.Deletions,
+			Patch:     fc.Patch,
+			Hunks:     sh,
+			Notes:     brain.NotesForFile(repo, num, fc.Path),
+		})
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
+}
+
+// cmdMark flips a single hunk mark on (on=true) or off (on=false).
+func cmdMark(args []string, on bool) error {
+	verb := "mark"
+	if !on {
+		verb = "unmark"
+	}
+	_, pos := splitFlags(args)
+	if len(pos) != 3 {
+		return fmt.Errorf("usage: rhodium %s <owner/repo#N> <file> <hunk-hash>", verb)
+	}
+	repo, num, err := parsePRRef(pos[0])
+	if err != nil {
+		return err
+	}
+	path, hash := pos[1], pos[2]
+
+	brain, err := LoadBrain()
+	if err != nil {
+		return err
+	}
+	defer brain.Close()
+
+	marks := brain.HunkMarks(repo, num, path)
+	if on {
+		marks[hash] = true
+	} else {
+		delete(marks, hash)
+	}
+	if err := brain.SetHunkMarks(repo, num, path, marks); err != nil {
+		return err
+	}
+
+	// Record the head/base SHAs the reviewer is looking at, so catch-up works
+	// consistently whether the mark came from the TUI or nvim.
+	for _, p := range brain.CachedPRs() {
+		if p.Repo == repo && p.Number == num {
+			_ = brain.SetFileReviewed(repo, num, path, p.HeadSHA, p.BaseSHA)
+			break
+		}
+	}
+	return nil
+}
+
+// cmdNote saves a note for a specific line. Body read from the positional arg,
+// or from stdin when body == "-". Line hash is computed here from the file
+// content at that line, so nvim doesn't need to duplicate the hashing.
+func cmdNote(args []string) error {
+	_, pos := splitFlags(args)
+	if len(pos) != 4 {
+		return fmt.Errorf("usage: rhodium note <owner/repo#N> <file> <line> <body|->")
+	}
+	repo, num, err := parsePRRef(pos[0])
+	if err != nil {
+		return err
+	}
+	path := pos[1]
+	lineNo, err := strconv.Atoi(pos[2])
+	if err != nil {
+		return fmt.Errorf("line must be an integer: %w", err)
+	}
+	body := pos[3]
+	if body == "-" {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return err
+		}
+		body = strings.TrimRight(string(data), "\n")
+	}
+	if strings.TrimSpace(body) == "" {
+		return fmt.Errorf("empty note body")
+	}
+
+	brain, err := LoadBrain()
+	if err != nil {
+		return err
+	}
+	defer brain.Close()
+
+	// Compute line hash from the file at head. If we can't fetch (e.g. offline,
+	// new file), fall back to an empty hash — note is still anchored by line
+	// number and the drift detector will warn later.
+	var lineHash string
+	for _, p := range brain.CachedPRs() {
+		if p.Repo == repo && p.Number == num {
+			if content, err := fetchFileAtRef(repo, path, p.HeadSHA); err == nil && content != "" {
+				lines := strings.Split(content, "\n")
+				if lineNo >= 1 && lineNo <= len(lines) {
+					lineHash = hashLine(lines[lineNo-1])
+				}
+			}
+			break
+		}
+	}
+	return brain.SaveNote(repo, num, path, lineNo, lineHash, body)
+}
+
