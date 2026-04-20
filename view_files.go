@@ -120,6 +120,11 @@ func (v *filesView) Update(a *app, msg tea.Msg) tea.Cmd {
 			return a.openFile(it.fc)
 		}
 	}
+	if !filtering {
+		if cmd, matched := tryAction(a, key.String()); matched {
+			return cmd
+		}
+	}
 	return v.delegate(msg)
 }
 

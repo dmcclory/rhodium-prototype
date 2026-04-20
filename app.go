@@ -123,6 +123,10 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.onPrefetchDone()
 	case editorDoneMsg:
 		return a, a.onEditorDone(m)
+	case actionDoneMsg:
+		return a, a.onActionDone(m)
+	case inlineNotesReadyMsg:
+		return a, a.onInlineNotesReady(m)
 	case pollTickMsg:
 		return a, a.onPollTick(m)
 
@@ -377,6 +381,43 @@ func (a *app) onEditorDone(msg editorDoneMsg) tea.Cmd {
 		}
 		a.files.rebuild(a)
 		a.prs.rebuild(a)
+	}
+	return nil
+}
+
+// onActionDone reports completion of an agent action. For tmux actions this
+// fires as soon as the pane is spawned (not when the chat ends); for the
+// fallback inline path it fires when the agent process exits.
+func (a *app) onActionDone(msg actionDoneMsg) tea.Cmd {
+	if msg.err != nil {
+		a.statusMsg = fmt.Sprintf("%s: %s", msg.action, msg.err.Error())
+		return nil
+	}
+	a.statusMsg = fmt.Sprintf("%s: launched", msg.action)
+	return nil
+}
+
+// onInlineNotesReady lands parsed agent notes and writes them to the brain
+// under source="agent" so they stay distinguishable from human notes.
+func (a *app) onInlineNotesReady(msg inlineNotesReadyMsg) tea.Cmd {
+	saved := 0
+	for _, n := range msg.notes {
+		if n.Path == "" || n.Line < 1 || n.Body == "" {
+			continue
+		}
+		if err := a.brain.SaveAgentNote(msg.pr.Repo, msg.pr.Number, n.Path, n.Line, n.Body); err != nil {
+			a.statusMsg = fmt.Sprintf("%s: save note: %s", msg.action, err.Error())
+			return nil
+		}
+		saved++
+	}
+	a.statusMsg = fmt.Sprintf("%s: %d notes added", msg.action, saved)
+	// Refresh list glyphs / diff overlay so new notes show up immediately.
+	a.files.rebuild(a)
+	a.prs.rebuild(a)
+	if a.activeView == viewDiff && a.selectedFile != "" {
+		a.diff.notes = a.brain.NotesForFile(msg.pr.Repo, msg.pr.Number, a.selectedFile)
+		a.diff.redraw()
 	}
 	return nil
 }

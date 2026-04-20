@@ -88,6 +88,7 @@ func LoadBrain() (*Brain, error) {
 			line_no     INTEGER NOT NULL,
 			line_hash   TEXT    NOT NULL,
 			body        TEXT    NOT NULL,
+			source      TEXT    NOT NULL DEFAULT 'human',
 			created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
 			resolved_at TEXT
 		);
@@ -130,6 +131,16 @@ func LoadBrain() (*Brain, error) {
 		if _, err := db.Exec(`ALTER TABLE notes ADD COLUMN resolved_at TEXT`); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("migrate notes.resolved_at: %w", err)
+		}
+	}
+	// Migrate older DBs that predate the source column. Existing notes stay
+	// 'human' so pre-agent-era workflows are unaffected.
+	var haveSource int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('notes') WHERE name = 'source'`).Scan(&haveSource)
+	if haveSource == 0 {
+		if _, err := db.Exec(`ALTER TABLE notes ADD COLUMN source TEXT NOT NULL DEFAULT 'human'`); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("migrate notes.source: %w", err)
 		}
 	}
 	return &Brain{db: db}, nil
@@ -333,6 +344,7 @@ type Note struct {
 	LineNo     int    `json:"line_no"`
 	LineHash   string `json:"line_hash"`
 	Body       string `json:"body"`
+	Source     string `json:"source"` // "human" (typed via `c`) or "agent" (first-pass review)
 	CreatedAt  string `json:"created_at"`
 	ResolvedAt string `json:"resolved_at,omitempty"`
 }
@@ -380,7 +392,7 @@ func (b *Brain) NoteCountForFile(repo string, pr int, path string) int {
 
 func (b *Brain) NotesForPR(repo string, pr int, filter NoteFilter) []Note {
 	key := prKey(repo, pr)
-	q := `SELECT id, pr_key, path, line_no, line_hash, body, created_at, resolved_at FROM notes WHERE pr_key = ?`
+	q := `SELECT id, pr_key, path, line_no, line_hash, body, source, created_at, resolved_at FROM notes WHERE pr_key = ?`
 	if filter == NotesActive {
 		q += ` AND resolved_at IS NULL`
 	}
@@ -394,7 +406,7 @@ func (b *Brain) NotesForPR(repo string, pr int, filter NoteFilter) []Note {
 	for rows.Next() {
 		var n Note
 		var resolved sql.NullString
-		if rows.Scan(&n.ID, &n.PRKey, &n.Path, &n.LineNo, &n.LineHash, &n.Body, &n.CreatedAt, &resolved) == nil {
+		if rows.Scan(&n.ID, &n.PRKey, &n.Path, &n.LineNo, &n.LineHash, &n.Body, &n.Source, &n.CreatedAt, &resolved) == nil {
 			if resolved.Valid {
 				n.ResolvedAt = resolved.String
 			}
@@ -407,7 +419,7 @@ func (b *Brain) NotesForPR(repo string, pr int, filter NoteFilter) []Note {
 func (b *Brain) NotesForFile(repo string, pr int, path string) []Note {
 	key := prKey(repo, pr)
 	rows, err := b.db.Query(
-		`SELECT id, pr_key, path, line_no, line_hash, body, created_at, resolved_at
+		`SELECT id, pr_key, path, line_no, line_hash, body, source, created_at, resolved_at
 		 FROM notes WHERE pr_key = ? AND path = ? AND resolved_at IS NULL ORDER BY line_no, id`,
 		key, path)
 	if err != nil {
@@ -418,7 +430,7 @@ func (b *Brain) NotesForFile(repo string, pr int, path string) []Note {
 	for rows.Next() {
 		var n Note
 		var resolved sql.NullString
-		if rows.Scan(&n.ID, &n.PRKey, &n.Path, &n.LineNo, &n.LineHash, &n.Body, &n.CreatedAt, &resolved) == nil {
+		if rows.Scan(&n.ID, &n.PRKey, &n.Path, &n.LineNo, &n.LineHash, &n.Body, &n.Source, &n.CreatedAt, &resolved) == nil {
 			if resolved.Valid {
 				n.ResolvedAt = resolved.String
 			}
@@ -431,8 +443,19 @@ func (b *Brain) NotesForFile(repo string, pr int, path string) []Note {
 func (b *Brain) SaveNote(repo string, pr int, path string, lineNo int, lineHash, body string) error {
 	key := prKey(repo, pr)
 	_, err := b.db.Exec(
-		`INSERT INTO notes (pr_key, path, line_no, line_hash, body) VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO notes (pr_key, path, line_no, line_hash, body, source) VALUES (?, ?, ?, ?, ?, 'human')`,
 		key, path, lineNo, lineHash, body)
+	return err
+}
+
+// SaveAgentNote records a note produced by an inline-notes action. Agents
+// don't see per-line hashes so line_hash stays empty; source="agent" keeps
+// these filterable away from human notes in future UI work.
+func (b *Brain) SaveAgentNote(repo string, pr int, path string, lineNo int, body string) error {
+	key := prKey(repo, pr)
+	_, err := b.db.Exec(
+		`INSERT INTO notes (pr_key, path, line_no, line_hash, body, source) VALUES (?, ?, ?, '', ?, 'agent')`,
+		key, path, lineNo, body)
 	return err
 }
 

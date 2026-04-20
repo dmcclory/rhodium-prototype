@@ -581,6 +581,9 @@ func (v *diffView) updateKeys(a *app, msg tea.KeyMsg) tea.Cmd {
 		}
 		return cmd
 	}
+	if cmd, matched := tryAction(a, msg.String()); matched {
+		return cmd
+	}
 	var cmd tea.Cmd
 	v.vp, cmd = v.vp.Update(msg)
 	return cmd

@@ -56,3 +56,20 @@ type pollTickMsg struct{ gen int }
 type editorDoneMsg struct {
 	err error
 }
+
+// actionDoneMsg fires when a configured agent action (interactive tmux
+// spawn, or fallback inline exec) completes. `action` is the action name
+// so the status bar can distinguish which harness finished.
+type actionDoneMsg struct {
+	action string
+	err    error
+}
+
+// inlineNotesReadyMsg carries parsed agent notes from a oneshot action
+// back onto the update loop so SaveAgentNote runs on the main goroutine
+// (keeps brain writes serialized with the rest of the update cycle).
+type inlineNotesReadyMsg struct {
+	action string
+	pr     PR
+	notes  []agentNote
+}

@@ -35,17 +35,14 @@ func launchEditor(cfg *Config, worktree, file, prKey string, line int) tea.Cmd {
 		// This keeps nvim as a foreground job of a real interactive shell so
 		// ctrl-z / fg / job control all work as expected — unlike wrapping
 		// in `$SHELL -c`, which is non-interactive and has no job control.
-		spawnArgs := tmuxArgs(cfg.TmuxMode(), worktree, prKey)
-		spawnArgs = append(spawnArgs, "-P", "-F", "#{pane_id}")
 		cmdline := shellJoin(append([]string{editor}, nvimArgs...))
 		return func() tea.Msg {
-			out, err := exec.Command("tmux", spawnArgs...).Output()
+			paneID, err := spawnTmuxPane(cfg.TmuxMode(), worktree, prKey)
 			if err != nil {
-				return editorDoneMsg{err: fmt.Errorf("tmux spawn: %w", err)}
+				return editorDoneMsg{err: err}
 			}
-			paneID := strings.TrimSpace(string(out))
-			if err := exec.Command("tmux", "send-keys", "-t", paneID, cmdline, "Enter").Run(); err != nil {
-				return editorDoneMsg{err: fmt.Errorf("tmux send-keys: %w", err)}
+			if err := tmuxSendKeys(paneID, cmdline); err != nil {
+				return editorDoneMsg{err: err}
 			}
 			return editorDoneMsg{}
 		}
@@ -57,6 +54,28 @@ func launchEditor(cfg *Config, worktree, file, prKey string, line int) tea.Cmd {
 	return tea.ExecProcess(cmd, func(err error) tea.Msg {
 		return editorDoneMsg{err: err}
 	})
+}
+
+// spawnTmuxPane creates a new tmux window/split per mode with cwd set to the
+// worktree, and returns the pane id so callers can follow up with send-keys.
+// Label is used for the window name when mode is "window".
+func spawnTmuxPane(mode, cwd, label string) (string, error) {
+	spawnArgs := tmuxArgs(mode, cwd, label)
+	spawnArgs = append(spawnArgs, "-P", "-F", "#{pane_id}")
+	out, err := exec.Command("tmux", spawnArgs...).Output()
+	if err != nil {
+		return "", fmt.Errorf("tmux spawn: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// tmuxSendKeys sends `cmdline` + Enter to the given pane. cmdline should
+// already be shell-quoted (see shellJoin).
+func tmuxSendKeys(paneID, cmdline string) error {
+	if err := exec.Command("tmux", "send-keys", "-t", paneID, cmdline, "Enter").Run(); err != nil {
+		return fmt.Errorf("tmux send-keys: %w", err)
+	}
+	return nil
 }
 
 func tmuxArgs(mode, cwd, prKey string) []string {

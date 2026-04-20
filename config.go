@@ -9,11 +9,35 @@ import (
 )
 
 type Config struct {
-	Repos     []string          `json:"repos"`
-	RepoPaths map[string]string `json:"repo_paths,omitempty"` // "owner/repo" → local clone path
-	Worktree  WorktreeConfig    `json:"worktree,omitempty"`
-	Tmux      TmuxConfig        `json:"tmux,omitempty"`
-	Editor    EditorConfig      `json:"editor,omitempty"`
+	Repos        []string          `json:"repos"`
+	RepoPaths    map[string]string `json:"repo_paths,omitempty"` // "owner/repo" → local clone path
+	Worktree     WorktreeConfig    `json:"worktree,omitempty"`
+	Tmux         TmuxConfig        `json:"tmux,omitempty"`
+	Editor       EditorConfig      `json:"editor,omitempty"`
+	Agents       []Agent           `json:"agents,omitempty"`
+	DefaultAgent string            `json:"default_agent,omitempty"`
+	Actions      []Action          `json:"actions,omitempty"`
+}
+
+// Agent is a coding-assistant binary (claude, opencode, etc). Actions pick
+// one by name; `default_agent` picks which is used when multiple are defined.
+type Agent struct {
+	Name        string   `json:"name"`
+	Command     string   `json:"command"`
+	OneshotArgs []string `json:"oneshot_args,omitempty"` // flags for non-interactive mode (e.g. claude's -p)
+}
+
+// Action binds a keypress to an agent invocation shape. The action describes
+// *what kind of conversation*; the agent knows *how to invoke itself* for
+// that kind. Swapping default_agent just works without editing actions.
+type Action struct {
+	Key            string `json:"key"`
+	Name           string `json:"name"`
+	Mode           string `json:"mode"`     // "interactive" | "oneshot"
+	Worktree       bool   `json:"worktree"` // true → resolve/create PR worktree before invoking
+	Context        string `json:"context"`  // "paths" | "patches"
+	Delivery       string `json:"delivery"` // "tmux" | "inline-notes"
+	PromptTemplate string `json:"prompt_template"`
 }
 
 type WorktreeConfig struct {
@@ -50,6 +74,103 @@ func (c *Config) TmuxMode() string {
 		return c.Tmux.Mode
 	}
 	return "window"
+}
+
+// defaultAgents / defaultActions ship built-in so the `t` chat and `f` first-pass
+// keys work without any user config. If the user defines agents/actions at all,
+// their list fully replaces ours — we don't deep-merge.
+func defaultAgents() []Agent {
+	return []Agent{
+		{Name: "claude", Command: "claude", OneshotArgs: []string{"-p"}},
+	}
+}
+
+func defaultActions() []Action {
+	return []Action{
+		{
+			Key:      "t",
+			Name:     "chat",
+			Mode:     "interactive",
+			Worktree: true,
+			Context:  "paths",
+			Delivery: "tmux",
+			PromptTemplate: `You're helping review PR {{.Repo}}#{{.Number}}: {{.Title}}
+Author: {{.Author}}
+Worktree (cwd): {{.Worktree}}
+
+Changed files:
+{{.FileList}}
+
+PR description:
+{{.Body}}
+
+Read whichever files seem relevant and discuss the change with me.`,
+		},
+		{
+			Key:      "f",
+			Name:     "first-pass",
+			Mode:     "oneshot",
+			Worktree: false,
+			Context:  "patches",
+			Delivery: "inline-notes",
+			PromptTemplate: `Do a first-pass review of PR {{.Repo}}#{{.Number}}: {{.Title}}
+Author: {{.Author}}
+
+PR description:
+{{.Body}}
+
+Unified diff of all changed files:
+{{.Patches}}
+
+Return ONLY a JSON array (no prose, no code fence) of review notes. Each entry:
+  {"path": "<file path>", "line": <new-file line number>, "body": "<your comment>"}
+Focus on real issues: bugs, unclear logic, missing edge cases, inconsistencies.
+Empty array [] is fine if nothing stands out.`,
+		},
+	}
+}
+
+// AgentsResolved returns the effective agent list (user config or defaults).
+func (c *Config) AgentsResolved() []Agent {
+	if len(c.Agents) > 0 {
+		return c.Agents
+	}
+	return defaultAgents()
+}
+
+// ActionsResolved returns the effective action list (user config or defaults).
+func (c *Config) ActionsResolved() []Action {
+	if len(c.Actions) > 0 {
+		return c.Actions
+	}
+	return defaultActions()
+}
+
+// DefaultAgentResolved picks the configured default, else the first agent,
+// else zero value.
+func (c *Config) DefaultAgentResolved() Agent {
+	agents := c.AgentsResolved()
+	if c.DefaultAgent != "" {
+		for _, a := range agents {
+			if a.Name == c.DefaultAgent {
+				return a
+			}
+		}
+	}
+	if len(agents) > 0 {
+		return agents[0]
+	}
+	return Agent{}
+}
+
+// ActionByKey finds an action by its configured keypress.
+func (c *Config) ActionByKey(key string) (Action, bool) {
+	for _, a := range c.ActionsResolved() {
+		if a.Key == key {
+			return a, true
+		}
+	}
+	return Action{}, false
 }
 
 // RepoPath returns the local clone path for a repo. Looks up config first;
