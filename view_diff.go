@@ -465,128 +465,187 @@ func (v *diffView) updateNotingKeys(a *app, msg tea.KeyMsg) tea.Cmd {
 }
 
 func (v *diffView) updateKeys(a *app, msg tea.KeyMsg) tea.Cmd {
-	switch msg.String() {
-	case "ctrl+c", "q":
-		return tea.Quit
-	case "esc", "h", "left":
-		a.activeView = viewFiles
-		a.files.rebuild(a)
-		a.prs.rebuild(a)
-		return nil
-	case "n", "down", "tab":
-		if len(v.hunks) > 0 && v.hunkIdx < len(v.hunks)-1 {
-			v.hunkIdx++
-			v.redraw()
-			v.jumpToHunk()
-		}
-		return nil
-	case "p", "up", "shift+tab":
-		if v.hunkIdx > 0 {
-			v.hunkIdx--
-			v.redraw()
-			v.jumpToHunk()
-		}
-		return nil
-	case " ", "x":
-		if v.hunkIdx >= 0 && v.hunkIdx < len(v.hunks) {
-			h := v.hunks[v.hunkIdx]
-			if v.marks == nil {
-				v.marks = map[string]bool{}
-			}
-			if v.marks[h.Hash] {
-				delete(v.marks, h.Hash)
-			} else {
-				v.marks[h.Hash] = true
-			}
-			v.saveMarks(a)
-			if v.hunkIdx < len(v.hunks)-1 {
-				v.hunkIdx++
-			}
-			v.redraw()
-			v.jumpToHunk()
-		}
-		return nil
-	case "m":
-		if v.marks == nil {
-			v.marks = map[string]bool{}
-		}
-		for _, h := range v.hunks {
-			v.marks[h.Hash] = true
-		}
-		v.saveMarks(a)
-		v.redraw()
-		v.jumpToHunk()
-		return nil
-	case "enter", "right":
-		if v.allMarked() {
-			a.activeView = viewFiles
-			a.files.rebuild(a)
-			a.prs.rebuild(a)
-		}
-		return nil
-	case "j":
-		v.moveCursor(1)
-		return nil
-	case "k":
-		v.moveCursor(-1)
-		return nil
-	case "u":
-		v.marks = map[string]bool{}
-		v.saveMarks(a)
-		v.redraw()
-		v.hunkIdx = 0
-		v.jumpToHunk()
-		a.statusMsg = "cleared marks on " + a.selectedFile
-		return nil
-	case "d":
-		if v.catchUpOldHead == "" {
-			return nil
-		}
-		fc, ok := a.currentFile()
-		if !ok {
-			return nil
-		}
-		if v.catchUpMode {
-			v.catchUpMode = false
-			v.hunks = parseHunks(fc.Patch)
-			v.marks = a.brain.HunkMarks(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
-			v.hunkIdx = firstUnmarked(v.hunks, v.marks)
-			a.statusMsg = "full diff  (d: catch-up diff)"
-		} else {
-			v.catchUpMode = true
-			v.hunks = parseHunks(v.catchUpPatch)
-			v.marks = a.brain.HunkMarks(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
-			v.hunkIdx = firstUnmarked(v.hunks, v.marks)
-			a.statusMsg = fmt.Sprintf("catch-up [%s]: changes since %s  (d: full diff)", v.catchUpClass, shortSHA(v.catchUpOldHead))
-		}
-		v.redraw()
-		v.jumpToHunk()
-		return nil
-	case "c":
-		lineNo := v.cursorFileLine()
-		if lineNo == 0 {
-			a.statusMsg = "cursor not on a file line"
-			return nil
-		}
-		v.noting = true
-		v.noteLineNo = lineNo
-		v.noteLineHash = v.cursorLineHash(lineNo)
-		v.noteInput.Reset()
-		return v.noteInput.Focus()
-	case "o":
-		cmd, err := v.openInEditor(a)
-		if err != nil {
-			a.statusMsg = "open: " + err.Error()
-			return nil
-		}
-		return cmd
-	}
-	if cmd, matched := tryAction(a, msg.String()); matched {
+	if cmd, matched := dispatch(a, msg.String(), false, v.bindings(a), globalBindings()); matched {
 		return cmd
 	}
 	var cmd tea.Cmd
 	v.vp, cmd = v.vp.Update(msg)
 	return cmd
+}
+
+// bindings declares every key the diff view handles. Kept data-oriented so
+// help rendering and dispatch share one source of truth; agent actions are
+// appended so user-configured harnesses appear here too.
+func (v *diffView) bindings(a *app) []Binding {
+	return append([]Binding{
+		{
+			Name: "back", Keys: []string{"esc", "h", "left"},
+			Desc: "back to files", Group: "Navigate",
+			Action: func(a *app) tea.Cmd {
+				a.activeView = viewFiles
+				a.files.rebuild(a)
+				a.prs.rebuild(a)
+				return nil
+			},
+		},
+		{
+			Name: "next-hunk", Keys: []string{"n", "down", "tab"},
+			Desc: "next hunk", Group: "Navigate",
+			Action: func(a *app) tea.Cmd {
+				if len(v.hunks) > 0 && v.hunkIdx < len(v.hunks)-1 {
+					v.hunkIdx++
+					v.redraw()
+					v.jumpToHunk()
+				}
+				return nil
+			},
+		},
+		{
+			Name: "prev-hunk", Keys: []string{"p", "up", "shift+tab"},
+			Desc: "prev hunk", Group: "Navigate",
+			Action: func(a *app) tea.Cmd {
+				if v.hunkIdx > 0 {
+					v.hunkIdx--
+					v.redraw()
+					v.jumpToHunk()
+				}
+				return nil
+			},
+		},
+		{
+			Name: "cursor-down", Keys: []string{"j"},
+			Desc: "cursor down", Group: "Navigate",
+			Action: func(a *app) tea.Cmd { v.moveCursor(1); return nil },
+		},
+		{
+			Name: "cursor-up", Keys: []string{"k"},
+			Desc: "cursor up", Group: "Navigate",
+			Action: func(a *app) tea.Cmd { v.moveCursor(-1); return nil },
+		},
+		{
+			Name: "advance", Keys: []string{"enter", "right"},
+			Desc: "back to files (when all marked)", Group: "Navigate",
+			Action: func(a *app) tea.Cmd {
+				if v.allMarked() {
+					a.activeView = viewFiles
+					a.files.rebuild(a)
+					a.prs.rebuild(a)
+				}
+				return nil
+			},
+		},
+		{
+			Name: "toggle-mark", Keys: []string{" ", "x"},
+			Desc: "toggle hunk + advance", Group: "Mark",
+			Action: func(a *app) tea.Cmd {
+				if v.hunkIdx < 0 || v.hunkIdx >= len(v.hunks) {
+					return nil
+				}
+				h := v.hunks[v.hunkIdx]
+				if v.marks == nil {
+					v.marks = map[string]bool{}
+				}
+				if v.marks[h.Hash] {
+					delete(v.marks, h.Hash)
+				} else {
+					v.marks[h.Hash] = true
+				}
+				v.saveMarks(a)
+				if v.hunkIdx < len(v.hunks)-1 {
+					v.hunkIdx++
+				}
+				v.redraw()
+				v.jumpToHunk()
+				return nil
+			},
+		},
+		{
+			Name: "mark-all", Keys: []string{"m"},
+			Desc: "mark every hunk", Group: "Mark",
+			Action: func(a *app) tea.Cmd {
+				if v.marks == nil {
+					v.marks = map[string]bool{}
+				}
+				for _, h := range v.hunks {
+					v.marks[h.Hash] = true
+				}
+				v.saveMarks(a)
+				v.redraw()
+				v.jumpToHunk()
+				return nil
+			},
+		},
+		{
+			Name: "unmark-all", Keys: []string{"u"},
+			Desc: "clear marks on file", Group: "Mark",
+			Action: func(a *app) tea.Cmd {
+				v.marks = map[string]bool{}
+				v.saveMarks(a)
+				v.redraw()
+				v.hunkIdx = 0
+				v.jumpToHunk()
+				a.statusMsg = "cleared marks on " + a.selectedFile
+				return nil
+			},
+		},
+		{
+			Name: "note", Keys: []string{"c"},
+			Desc: "add note at cursor", Group: "Notes",
+			Action: func(a *app) tea.Cmd {
+				lineNo := v.cursorFileLine()
+				if lineNo == 0 {
+					a.statusMsg = "cursor not on a file line"
+					return nil
+				}
+				v.noting = true
+				v.noteLineNo = lineNo
+				v.noteLineHash = v.cursorLineHash(lineNo)
+				v.noteInput.Reset()
+				return v.noteInput.Focus()
+			},
+		},
+		{
+			Name: "catch-up-toggle", Keys: []string{"d"},
+			Desc: "toggle catch-up / full diff", Group: "View",
+			Action: func(a *app) tea.Cmd {
+				if v.catchUpOldHead == "" {
+					return nil
+				}
+				fc, ok := a.currentFile()
+				if !ok {
+					return nil
+				}
+				if v.catchUpMode {
+					v.catchUpMode = false
+					v.hunks = parseHunks(fc.Patch)
+					v.marks = a.brain.HunkMarks(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
+					v.hunkIdx = firstUnmarked(v.hunks, v.marks)
+					a.statusMsg = "full diff  (d: catch-up diff)"
+				} else {
+					v.catchUpMode = true
+					v.hunks = parseHunks(v.catchUpPatch)
+					v.marks = a.brain.HunkMarks(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
+					v.hunkIdx = firstUnmarked(v.hunks, v.marks)
+					a.statusMsg = fmt.Sprintf("catch-up [%s]: changes since %s  (d: full diff)", v.catchUpClass, shortSHA(v.catchUpOldHead))
+				}
+				v.redraw()
+				v.jumpToHunk()
+				return nil
+			},
+		},
+		{
+			Name: "open-editor", Keys: []string{"o"},
+			Desc: "open file in editor", Group: "View",
+			Action: func(a *app) tea.Cmd {
+				cmd, err := v.openInEditor(a)
+				if err != nil {
+					a.statusMsg = "open: " + err.Error()
+					return nil
+				}
+				return cmd
+			},
+		},
+	}, agentBindings(a.cfg)...)
 }
 
 func (v *diffView) restoreSize(a *app) {

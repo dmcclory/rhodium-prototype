@@ -42,6 +42,7 @@ type app struct {
 	prs   prsView
 	files filesView
 	diff  diffView
+	help  helpOverlay
 
 	// Shared PR data. prFiles is keyed by "<repo>#<num>".
 	allPRs          []PR
@@ -131,6 +132,13 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.onPollTick(m)
 
 	case tea.KeyMsg:
+		if a.help.open {
+			switch m.String() {
+			case "?", "esc", "q", "ctrl+c":
+				a.help.open = false
+			}
+			return a, nil
+		}
 		return a, a.routeKey(m)
 	}
 
@@ -151,7 +159,23 @@ func (a *app) View() string {
 	case viewDiff:
 		body = a.diff.View(a)
 	}
-	return appStyle.Render(body) + "\n" + lipgloss.NewStyle().Faint(true).Render(a.footer())
+	rendered := appStyle.Render(body) + "\n" + lipgloss.NewStyle().Faint(true).Render(a.footer())
+
+	if a.help.open {
+		box := a.help.Render(a)
+		boxW := lipgloss.Width(box)
+		boxH := lipgloss.Height(box)
+		x := (a.width - boxW) / 2
+		if x < 0 {
+			x = 0
+		}
+		y := (a.height - boxH) / 2
+		if y < 0 {
+			y = 0
+		}
+		return overlay(rendered, box, x, y)
+	}
+	return rendered
 }
 
 // --- routing ---

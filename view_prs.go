@@ -16,6 +16,7 @@ type prsView struct {
 
 func newPRsView() prsView {
 	l := list.New(nil, compactDelegate(), 0, 0)
+	l.SetShowHelp(false)
 	return prsView{list: l}
 }
 
@@ -32,17 +33,41 @@ func (v *prsView) Update(a *app, msg tea.Msg) tea.Cmd {
 	if !isKey {
 		return v.delegate(msg)
 	}
-
 	filtering := v.list.FilterState() == list.Filtering
+	if cmd, matched := dispatch(a, key.String(), filtering, v.bindings(a), globalBindings()); matched {
+		return cmd
+	}
+	return v.delegate(msg)
+}
 
-	switch key.String() {
-	case "ctrl+c", "q":
-		if !filtering {
-			return tea.Quit
-		}
-	case "s":
-		if !filtering {
-			if it, ok := v.list.SelectedItem().(prItem); ok {
+func (v *prsView) bindings(a *app) []Binding {
+	return []Binding{
+		{
+			Name: "back", Keys: []string{"esc", "h", "left"},
+			Desc: "back to todo", Group: "Navigate",
+			Action: func(a *app) tea.Cmd {
+				a.activeView = viewTodo
+				return nil
+			},
+		},
+		{
+			Name: "open-pr", Keys: []string{"enter", "l", "right"},
+			Desc: "open selected PR", Group: "Navigate",
+			Action: func(a *app) tea.Cmd {
+				if it, ok := v.list.SelectedItem().(prItem); ok {
+					return a.openPR(it.pr)
+				}
+				return nil
+			},
+		},
+		{
+			Name: "scrutiny", Keys: []string{"s"},
+			Desc: "toggle scrutiny on selected PR", Group: "View",
+			Action: func(a *app) tea.Cmd {
+				it, ok := v.list.SelectedItem().(prItem)
+				if !ok {
+					return nil
+				}
 				on := !it.scrutinized
 				a.brain.SetScrutiny(it.pr.Repo, it.pr.Number, on)
 				v.rebuild(a)
@@ -51,24 +76,10 @@ func (v *prsView) Update(a *app, msg tea.Msg) tea.Cmd {
 				} else {
 					a.statusMsg = fmt.Sprintf("scrutiny OFF for %s#%d", it.pr.Repo, it.pr.Number)
 				}
-			}
-			return nil
-		}
-	case "esc", "h", "left":
-		if key.String() == "h" && filtering {
-			break
-		}
-		a.activeView = viewTodo
-		return nil
-	case "enter", "l", "right":
-		if key.String() == "l" && filtering {
-			break
-		}
-		if it, ok := v.list.SelectedItem().(prItem); ok {
-			return a.openPR(it.pr)
-		}
+				return nil
+			},
+		},
 	}
-	return v.delegate(msg)
 }
 
 func (v *prsView) delegate(msg tea.Msg) tea.Cmd {

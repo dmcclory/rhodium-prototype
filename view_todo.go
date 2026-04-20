@@ -17,6 +17,7 @@ type todoView struct {
 func newTodoView() todoView {
 	l := list.New(nil, compactDelegate(), 0, 0)
 	l.Title = "Todo"
+	l.SetShowHelp(false)
 	return todoView{list: l}
 }
 
@@ -34,28 +35,34 @@ func (v *todoView) Update(a *app, msg tea.Msg) tea.Cmd {
 	if !isKey {
 		return v.delegate(msg)
 	}
-
 	filtering := v.list.FilterState() == list.Filtering
-
-	switch key.String() {
-	case "ctrl+c", "q":
-		if !filtering {
-			return tea.Quit
-		}
-	case "a":
-		if !filtering {
-			a.activeView = viewPRs
-			return nil
-		}
-	case "enter", "l", "right":
-		if key.String() == "l" && filtering {
-			break
-		}
-		if it, ok := v.list.SelectedItem().(todoItem); ok {
-			return a.openPR(it.pr)
-		}
+	if cmd, matched := dispatch(a, key.String(), filtering, v.bindings(a), globalBindings()); matched {
+		return cmd
 	}
 	return v.delegate(msg)
+}
+
+func (v *todoView) bindings(a *app) []Binding {
+	return []Binding{
+		{
+			Name: "all-prs", Keys: []string{"a"},
+			Desc: "all PRs", Group: "Navigate",
+			Action: func(a *app) tea.Cmd {
+				a.activeView = viewPRs
+				return nil
+			},
+		},
+		{
+			Name: "open-pr", Keys: []string{"enter", "l", "right"},
+			Desc: "open selected PR", Group: "Navigate",
+			Action: func(a *app) tea.Cmd {
+				if it, ok := v.list.SelectedItem().(todoItem); ok {
+					return a.openPR(it.pr)
+				}
+				return nil
+			},
+		},
+	}
 }
 
 func (v *todoView) delegate(msg tea.Msg) tea.Cmd {

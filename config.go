@@ -163,15 +163,6 @@ func (c *Config) DefaultAgentResolved() Agent {
 	return Agent{}
 }
 
-// ActionByKey finds an action by its configured keypress.
-func (c *Config) ActionByKey(key string) (Action, bool) {
-	for _, a := range c.ActionsResolved() {
-		if a.Key == key {
-			return a, true
-		}
-	}
-	return Action{}, false
-}
 
 // RepoPath returns the local clone path for a repo. Looks up config first;
 // falls back to $RHODIUM_REPOS_ROOT/<repo-name> or ~/code/<repo-name>.

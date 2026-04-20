@@ -12,24 +12,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// tryAction looks up a configured action for `key` and runs it. Returns
-// (cmd, true) if the key matched a known action (even if it errored — the
-// error is surfaced to the status bar by the caller). Returns (nil, false)
-// when the key doesn't match any action and the view's normal handler
-// should run.
-func tryAction(a *app, key string) (tea.Cmd, bool) {
-	action, ok := a.cfg.ActionByKey(key)
-	if !ok {
-		return nil, false
-	}
-	cmd, err := runAction(a, action)
-	if err != nil {
-		a.statusMsg = fmt.Sprintf("%s: %s", action.Name, err.Error())
-		return nil, true
-	}
-	return cmd, true
-}
-
 // runAction dispatches a configured action. Resolves the worktree if the
 // action asks for one, builds the prompt context, renders the template, and
 // hands off to the right delivery backend.

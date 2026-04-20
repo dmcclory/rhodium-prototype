@@ -32,6 +32,7 @@ type filesView struct {
 func newFilesView() filesView {
 	l := list.New(nil, compactDelegate(), 0, 0)
 	l.Title = "Files"
+	l.SetShowHelp(false)
 	return filesView{
 		list:   l,
 		infoVP: viewport.New(0, 0),
@@ -78,54 +79,56 @@ func (v *filesView) Update(a *app, msg tea.Msg) tea.Cmd {
 	if !isKey {
 		return v.delegate(msg)
 	}
-
 	filtering := v.list.FilterState() == list.Filtering
-
-	if !filtering {
-		switch key.String() {
-		case "1":
-			v.tab = tabFiles
-			return nil
-		case "2":
-			v.tab = tabNotes
-			v.rebuildInfoVP(a)
-			return nil
-		}
-	}
-
-	switch key.String() {
-	case "ctrl+c", "q":
-		if !filtering {
-			return tea.Quit
-		}
-	case "esc", "h", "left":
-		if key.String() == "h" && filtering {
-			break
-		}
-		v.tab = tabFiles
-		if a.listViewOrigin == viewTodo {
-			a.activeView = viewTodo
-		} else {
-			a.activeView = viewPRs
-		}
-		return nil
-	case "enter", "l", "right":
-		if key.String() == "l" && filtering {
-			break
-		}
-		if v.tab != tabFiles {
-			break
-		}
-		if it, ok := v.list.SelectedItem().(fileItem); ok {
-			return a.openFile(it.fc)
-		}
-	}
-	if !filtering {
-		if cmd, matched := tryAction(a, key.String()); matched {
-			return cmd
-		}
+	if cmd, matched := dispatch(a, key.String(), filtering, v.bindings(a), globalBindings()); matched {
+		return cmd
 	}
 	return v.delegate(msg)
+}
+
+func (v *filesView) bindings(a *app) []Binding {
+	return append([]Binding{
+		{
+			Name: "back", Keys: []string{"esc", "h", "left"},
+			Desc: "back", Group: "Navigate",
+			Action: func(a *app) tea.Cmd {
+				v.tab = tabFiles
+				if a.listViewOrigin == viewTodo {
+					a.activeView = viewTodo
+				} else {
+					a.activeView = viewPRs
+				}
+				return nil
+			},
+		},
+		{
+			Name: "open-file", Keys: []string{"enter", "l", "right"},
+			Desc: "open selected file", Group: "Navigate",
+			Action: func(a *app) tea.Cmd {
+				if v.tab != tabFiles {
+					return nil
+				}
+				if it, ok := v.list.SelectedItem().(fileItem); ok {
+					return a.openFile(it.fc)
+				}
+				return nil
+			},
+		},
+		{
+			Name: "tab-files", Keys: []string{"1"},
+			Desc: "files tab", Group: "View",
+			Action: func(a *app) tea.Cmd { v.tab = tabFiles; return nil },
+		},
+		{
+			Name: "tab-notes", Keys: []string{"2"},
+			Desc: "notes tab", Group: "View",
+			Action: func(a *app) tea.Cmd {
+				v.tab = tabNotes
+				v.rebuildInfoVP(a)
+				return nil
+			},
+		},
+	}, agentBindings(a.cfg)...)
 }
 
 func (v *filesView) delegate(msg tea.Msg) tea.Cmd {
