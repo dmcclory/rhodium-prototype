@@ -32,6 +32,14 @@ type diffView struct {
 	catchUpClass   Class  // diff4 classification of the catch-up
 	catchUpPatch   string // the delta patch for the current file
 
+	// Slow-path segmentation state. Populated when catch-up lands on a
+	// complex class and ComputeSlow returns per-segment decomposition.
+	// segmented==true means v.hunks coordinates are segment-local, so the
+	// full-file render path in redraw() must be skipped.
+	segments       []Segment
+	segmentViewIdx int // phase 2: cycles which View each segment renders under
+	segmented      bool
+
 	// Note input state.
 	noting       bool
 	noteLineNo   int
@@ -66,20 +74,36 @@ func (v *diffView) Footer(a *app) string {
 		return fmt.Sprintf("line %d  ctrl+d: save  esc: cancel", v.noteLineNo)
 	}
 	marked := 0
-	for _, h := range v.hunks {
+	total := 0
+	cur := 0
+	for i, h := range v.hunks {
+		if !h.isMarkable() {
+			continue
+		}
+		total++
 		if v.marks[h.Hash] {
 			marked++
 		}
+		if i <= v.hunkIdx {
+			cur = total
+		}
 	}
-	total := len(v.hunks)
-	cur := v.hunkIdx + 1
 	if total == 0 {
 		cur = 0
 	}
 	modeHint := ""
 	if v.catchUpOldHead != "" {
 		if v.catchUpMode {
-			modeHint = fmt.Sprintf("  [catch-up %s since %s]  d: full diff", v.catchUpClass, shortSHA(v.catchUpOldHead))
+			if v.segmented {
+				maxV := maxSegmentViews(v.segments)
+				cycleHint := ""
+				if maxV > 1 {
+					cycleHint = fmt.Sprintf("  v: cycle view (%d/%d)", (v.segmentViewIdx%maxV)+1, maxV)
+				}
+				modeHint = fmt.Sprintf("  [catch-up %s: %d segments since %s]  d: full diff%s", v.catchUpClass, len(v.segments), shortSHA(v.catchUpOldHead), cycleHint)
+			} else {
+				modeHint = fmt.Sprintf("  [catch-up %s since %s]  d: full diff", v.catchUpClass, shortSHA(v.catchUpOldHead))
+			}
 		} else {
 			modeHint = "  [full diff]  d: catch-up"
 		}
@@ -114,6 +138,9 @@ func (v *diffView) open(a *app, fc FileChange) tea.Cmd {
 	v.catchUpOldBase = ""
 	v.catchUpClass = ClassB1B2F1F2
 	v.catchUpPatch = ""
+	v.segments = nil
+	v.segmentViewIdx = 0
+	v.segmented = false
 
 	revState := a.brain.FileReviewedState(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
 	scrutinized := a.brain.IsScrutinized(a.selectedPR.Repo, a.selectedPR.Number)
@@ -148,8 +175,14 @@ func (v *diffView) open(a *app, fc FileChange) tea.Cmd {
 				f2, _ := fetchFileAtRef(repo, path, newHead)
 				d := Diamond{B1: b1, F1: f1, B2: b2, F2: f2}
 				class := Classify(d, nil)
+				result := ComputeSlow(d)
+				// For shown-as-diff2 classes we still fetch the whole-file
+				// unified patch — it's one segment, and the reviewer gets
+				// nicer context/hunk boundaries from git than from our
+				// patience-based diff2Hunks. Complex classes go through
+				// segmentHunks instead, so no patch is needed.
 				var patch string
-				if !class.Hidden() {
+				if class.ShownAsDiff2() {
 					files, _ := fetchCompare(repo, oldHead, newHead)
 					for _, f := range files {
 						if f.Path == path {
@@ -158,7 +191,7 @@ func (v *diffView) open(a *app, fc FileChange) tea.Cmd {
 						}
 					}
 				}
-				return diamondClassifiedMsg{path: path, class: class, diamond: d, patch: patch}
+				return diamondClassifiedMsg{path: path, class: class, diamond: d, result: result, patch: patch}
 			})
 		} else {
 			a.statusMsg = fmt.Sprintf("loading catch-up diff %s..%s", shortSHA(oldHead), shortSHA(newHead))
@@ -233,6 +266,7 @@ func (v *diffView) onDiamondClassified(a *app, msg diamondClassifiedMsg) tea.Cmd
 
 	if msg.class.Hidden() {
 		v.catchUpMode = false
+		v.segmented = false
 		label := msg.class.String()
 		if msg.class.IsForget() {
 			label = "FORGET — base absorbed feature"
@@ -244,18 +278,32 @@ func (v *diffView) onDiamondClassified(a *app, msg diamondClassifiedMsg) tea.Cmd
 	}
 
 	v.catchUpMode = true
-	if msg.patch != "" {
+	if msg.class.ShownAsDiff2() && msg.patch != "" {
+		// Single-segment case: reuse git's whole-file unified patch.
 		v.catchUpPatch = msg.patch
 		v.hunks = parseHunks(msg.patch)
+		v.segments = nil
+		v.segmented = false
+	} else if msg.result != nil && len(msg.result.Segments) > 0 {
+		// Complex class: per-segment decomposition.
+		v.segments = msg.result.Segments
+		v.hunks = segmentHunks(v.segments, v.segmentViewIdx)
+		v.catchUpPatch = ""
+		v.segmented = true
 	}
 	v.marks = a.brain.HunkMarks(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile)
 	v.hunkIdx = firstUnmarked(v.hunks, v.marks)
-	views := msg.class.Views()
-	viewLabel := ""
-	if len(views) > 0 {
-		viewLabel = fmt.Sprintf("%s→%s", views[0].From, views[0].To)
+
+	if v.segmented {
+		a.statusMsg = fmt.Sprintf("catch-up [%s]: %d segments  (d: full diff)", msg.class, len(v.segments))
+	} else {
+		views := msg.class.Views()
+		viewLabel := ""
+		if len(views) > 0 {
+			viewLabel = fmt.Sprintf("%s→%s", views[0].From, views[0].To)
+		}
+		a.statusMsg = fmt.Sprintf("catch-up [%s]: %s  (d: full diff)", msg.class, viewLabel)
 	}
-	a.statusMsg = fmt.Sprintf("catch-up [%s]: %s  (d: full diff)", msg.class, viewLabel)
 	v.redraw()
 	v.jumpToHunk()
 	return nil
@@ -287,7 +335,7 @@ func (v *diffView) redraw() {
 	var body string
 	var lines []int
 	var lmap []int
-	if v.blob != "" {
+	if v.blob != "" && !v.segmented {
 		body, lines, lmap = renderFullFile(v.blob, v.hunks, v.marks, v.hunkIdx, v.notes, v.cursorLine)
 	} else {
 		body, lines, lmap = renderHunks(v.hunks, v.marks, v.hunkIdx, v.notes, v.cursorLine)
@@ -308,12 +356,61 @@ func (v *diffView) jumpToHunk() {
 }
 
 func (v *diffView) allMarked() bool {
+	any := false
 	for _, h := range v.hunks {
+		if !h.isMarkable() {
+			continue
+		}
+		any = true
 		if !v.marks[h.Hash] {
 			return false
 		}
 	}
-	return len(v.hunks) > 0
+	return any
+}
+
+// stepHunk moves v.hunkIdx by ±1 (or more, future-proof) across real hunks,
+// skipping synthetic segment headers so n/p/tab navigation only lands on
+// markable units.
+func (v *diffView) stepHunk(delta int) {
+	if len(v.hunks) == 0 || delta == 0 {
+		return
+	}
+	step := 1
+	if delta < 0 {
+		step = -1
+	}
+	next := v.hunkIdx + step
+	for next >= 0 && next < len(v.hunks) && !v.hunks[next].isMarkable() {
+		next += step
+	}
+	if next < 0 || next >= len(v.hunks) {
+		return
+	}
+	v.hunkIdx = next
+}
+
+// currentSegmentView returns the View the hunk at hunkIdx is being rendered
+// under, or ok=false when not in segmented mode or the cursor is off the
+// hunk list. Used to decide whether a note can be keyed to an F2 line.
+func (v *diffView) currentSegmentView() (View, bool) {
+	if !v.segmented || v.hunkIdx < 0 || v.hunkIdx >= len(v.hunks) {
+		return View{}, false
+	}
+	segIdx := -1
+	for i := 0; i <= v.hunkIdx; i++ {
+		if !v.hunks[i].isMarkable() {
+			segIdx++
+		}
+	}
+	if segIdx < 0 || segIdx >= len(v.segments) {
+		return View{}, false
+	}
+	views := v.segments[segIdx].Class.Views()
+	if len(views) == 0 {
+		return View{}, false
+	}
+	return views[v.segmentViewIdx%len(views)], true
 }
 
 func (v *diffView) renderNotingView(a *app) string {
@@ -492,11 +589,9 @@ func (v *diffView) bindings(a *app) []Binding {
 			Name: "next-hunk", Keys: []string{"n", "down", "tab"},
 			Desc: "next hunk", Group: "Navigate",
 			Action: func(a *app) tea.Cmd {
-				if len(v.hunks) > 0 && v.hunkIdx < len(v.hunks)-1 {
-					v.hunkIdx++
-					v.redraw()
-					v.jumpToHunk()
-				}
+				v.stepHunk(1)
+				v.redraw()
+				v.jumpToHunk()
 				return nil
 			},
 		},
@@ -504,11 +599,9 @@ func (v *diffView) bindings(a *app) []Binding {
 			Name: "prev-hunk", Keys: []string{"p", "up", "shift+tab"},
 			Desc: "prev hunk", Group: "Navigate",
 			Action: func(a *app) tea.Cmd {
-				if v.hunkIdx > 0 {
-					v.hunkIdx--
-					v.redraw()
-					v.jumpToHunk()
-				}
+				v.stepHunk(-1)
+				v.redraw()
+				v.jumpToHunk()
 				return nil
 			},
 		},
@@ -542,6 +635,13 @@ func (v *diffView) bindings(a *app) []Binding {
 					return nil
 				}
 				h := v.hunks[v.hunkIdx]
+				if !h.isMarkable() {
+					// Cursor is on a synthetic segment header — just advance.
+					v.stepHunk(1)
+					v.redraw()
+					v.jumpToHunk()
+					return nil
+				}
 				if v.marks == nil {
 					v.marks = map[string]bool{}
 				}
@@ -551,9 +651,7 @@ func (v *diffView) bindings(a *app) []Binding {
 					v.marks[h.Hash] = true
 				}
 				v.saveMarks(a)
-				if v.hunkIdx < len(v.hunks)-1 {
-					v.hunkIdx++
-				}
+				v.stepHunk(1)
 				v.redraw()
 				v.jumpToHunk()
 				return nil
@@ -567,6 +665,9 @@ func (v *diffView) bindings(a *app) []Binding {
 					v.marks = map[string]bool{}
 				}
 				for _, h := range v.hunks {
+					if !h.isMarkable() {
+						continue
+					}
 					v.marks[h.Hash] = true
 				}
 				v.saveMarks(a)
@@ -592,6 +693,15 @@ func (v *diffView) bindings(a *app) []Binding {
 			Name: "note", Keys: []string{"c"},
 			Desc: "add note at cursor", Group: "Notes",
 			Action: func(a *app) tea.Cmd {
+				// In segmented mode, notes key off new-file (F2) line numbers
+				// — segments rendered under any other view (b1→b2, f1→f2,
+				// etc.) don't have a clean F2 mapping, so block them. Most
+				// primary views do end at F2; this is only a limitation for
+				// a handful of classes.
+				if view, ok := v.currentSegmentView(); ok && view.To != F2 {
+					a.statusMsg = fmt.Sprintf("notes are only supported on F2 views (this segment: %s→%s)", view.From, view.To)
+					return nil
+				}
 				lineNo := v.cursorFileLine()
 				if lineNo == 0 {
 					a.statusMsg = "cursor not on a file line"
@@ -602,6 +712,28 @@ func (v *diffView) bindings(a *app) []Binding {
 				v.noteLineHash = v.cursorLineHash(lineNo)
 				v.noteInput.Reset()
 				return v.noteInput.Focus()
+			},
+		},
+		{
+			Name: "cycle-view", Keys: []string{"v"},
+			Desc: "cycle segment view", Group: "View",
+			Action: func(a *app) tea.Cmd {
+				if !v.segmented || len(v.segments) == 0 {
+					return nil
+				}
+				if maxSegmentViews(v.segments) <= 1 {
+					a.statusMsg = "no alternate views for these segments"
+					return nil
+				}
+				v.segmentViewIdx++
+				v.hunks = segmentHunks(v.segments, v.segmentViewIdx)
+				v.hunkIdx = firstUnmarked(v.hunks, v.marks)
+				v.cursorLine = 0
+				maxV := maxSegmentViews(v.segments)
+				a.statusMsg = fmt.Sprintf("view %d/%d", (v.segmentViewIdx%maxV)+1, maxV)
+				v.redraw()
+				v.jumpToHunk()
+				return nil
 			},
 		},
 		{
@@ -617,16 +749,24 @@ func (v *diffView) bindings(a *app) []Binding {
 				}
 				if v.catchUpMode {
 					v.catchUpMode = false
+					v.segmented = false
 					v.hunks = parseHunks(fc.Patch)
 					v.marks = a.brain.HunkMarks(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
 					v.hunkIdx = firstUnmarked(v.hunks, v.marks)
 					a.statusMsg = "full diff  (d: catch-up diff)"
 				} else {
 					v.catchUpMode = true
-					v.hunks = parseHunks(v.catchUpPatch)
+					if len(v.segments) > 0 {
+						v.hunks = segmentHunks(v.segments, v.segmentViewIdx)
+						v.segmented = true
+						a.statusMsg = fmt.Sprintf("catch-up [%s]: %d segments since %s  (d: full diff)", v.catchUpClass, len(v.segments), shortSHA(v.catchUpOldHead))
+					} else {
+						v.hunks = parseHunks(v.catchUpPatch)
+						v.segmented = false
+						a.statusMsg = fmt.Sprintf("catch-up [%s]: changes since %s  (d: full diff)", v.catchUpClass, shortSHA(v.catchUpOldHead))
+					}
 					v.marks = a.brain.HunkMarks(a.selectedPR.Repo, a.selectedPR.Number, fc.Path)
 					v.hunkIdx = firstUnmarked(v.hunks, v.marks)
-					a.statusMsg = fmt.Sprintf("catch-up [%s]: changes since %s  (d: full diff)", v.catchUpClass, shortSHA(v.catchUpOldHead))
 				}
 				v.redraw()
 				v.jumpToHunk()
@@ -656,7 +796,17 @@ func (v *diffView) restoreSize(a *app) {
 
 func firstUnmarked(hunks []Hunk, marks map[string]bool) int {
 	for i, h := range hunks {
+		if !h.isMarkable() {
+			continue
+		}
 		if !marks[h.Hash] {
+			return i
+		}
+	}
+	// Nothing unmarked — fall back to the first markable hunk so the cursor
+	// doesn't land on a synthetic segment header.
+	for i, h := range hunks {
+		if h.isMarkable() {
 			return i
 		}
 	}

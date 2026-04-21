@@ -17,6 +17,12 @@ type Hunk struct {
 	Hash      string   // content hash of the +/- lines only
 }
 
+// isMarkable distinguishes real diff hunks (hashed +/- content the reviewer
+// can tick off) from synthetic segment-header hunks (Hash==""), which only
+// exist to render a boundary label between the real hunks of a segmented
+// slow-path view.
+func (h Hunk) isMarkable() bool { return h.Hash != "" }
+
 var hunkHeaderRE = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@`)
 
 // parseHunks splits a unified-diff patch into hunks. File header lines

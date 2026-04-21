@@ -35,9 +35,10 @@ type catchUpLoadedMsg struct {
 
 type diamondClassifiedMsg struct {
 	path    string
-	class   Class
-	diamond Diamond
-	patch   string
+	class   Class   // top-level class, for status line
+	diamond Diamond // four corners, kept for segment rendering
+	result  *Result // slow-path segmentation; nil if classification failed
+	patch   string  // whole-file delta patch, only filled for ShownAsDiff2 top-level
 	err     error
 }
 
