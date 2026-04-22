@@ -798,7 +798,19 @@ func (v *diffView) updateKeys(a *app, msg tea.KeyMsg) tea.Cmd {
 // bindings declares every key the diff view handles. Kept data-oriented so
 // help rendering and dispatch share one source of truth; agent actions are
 // appended so user-configured harnesses appear here too.
+//
+// The diff view has three modes — base diff browsing, in-progress note,
+// and the @-mention picker over the note. Each shows different shortcuts
+// in help. Dispatch only ever consults the base table because Update
+// routes to updateNotingKeys / updateMentionKeys before reaching the
+// dispatch path in noting modes.
 func (v *diffView) bindings(a *app) []Binding {
+	if v.noting {
+		if v.mention.open {
+			return mentionPickerBindings()
+		}
+		return notingBindings()
+	}
 	return append([]Binding{
 		{
 			Name: "back", Keys: []string{"esc", "h", "left"},
@@ -1018,6 +1030,30 @@ func (v *diffView) bindings(a *app) []Binding {
 			},
 		},
 	}, agentBindings(a.cfg)...)
+}
+
+// notingBindings are display-only entries shown in the help overlay while
+// the user is composing a note. The actual key handling lives in
+// updateNotingKeys; Action is nil because dispatch never sees these.
+func notingBindings() []Binding {
+	return []Binding{
+		{Name: "save-note", Keys: []string{"ctrl+d"}, Desc: "save note", Group: "Notes"},
+		{Name: "cancel-note", Keys: []string{"esc"}, Desc: "cancel without saving", Group: "Notes"},
+		{Name: "mention", Keys: []string{"@"}, Desc: "open @-mention picker (at word boundary)", Group: "Notes"},
+	}
+}
+
+// mentionPickerBindings are display-only entries shown in the help overlay
+// while the @-mention picker is open over the note textarea. Routing lives
+// in updateMentionKeys.
+func mentionPickerBindings() []Binding {
+	return []Binding{
+		{Name: "mention-nav", Keys: []string{"up", "down"}, Desc: "move selection", Group: "Mention"},
+		{Name: "mention-filter", Keys: []string{"a-z, 0-9, -, _"}, Desc: "type to filter contributors", Group: "Mention"},
+		{Name: "mention-accept", Keys: []string{"enter"}, Desc: "insert @login and close", Group: "Mention"},
+		{Name: "mention-close", Keys: []string{"esc"}, Desc: "close picker, leave text untouched", Group: "Mention"},
+		{Name: "mention-backspace", Keys: []string{"backspace"}, Desc: "delete a query char (or @ to close)", Group: "Mention"},
+	}
 }
 
 func (v *diffView) restoreSize(a *app) {

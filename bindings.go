@@ -20,7 +20,7 @@ type Binding struct {
 }
 
 // Group names — also the rendering order in the help overlay.
-var groupOrder = []string{"Navigate", "Mark", "Notes", "View", "Agent", "Global"}
+var groupOrder = []string{"Navigate", "Mark", "Notes", "Mention", "View", "Agent", "Global"}
 
 // dispatch walks the given binding tables in order and fires the first
 // match. Returns (cmd, true) when a key matched so callers know whether to

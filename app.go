@@ -44,6 +44,9 @@ type app struct {
 	diff  diffView
 	help  helpOverlay
 
+	// review modal lives at app level so any list view can open it.
+	review reviewModal
+
 	// Shared PR data. prFiles is keyed by "<repo>#<num>".
 	allPRs          []PR
 	freshKeys       map[string]bool // keys confirmed still open by a repo listing
@@ -78,6 +81,7 @@ func newApp(cfg *Config, brain *Brain) *app {
 		prs:             newPRsView(),
 		files:           newFilesView(),
 		diff:            newDiffView(),
+		review:          newReviewModal(),
 		prFiles:         map[string][]FileChange{},
 		freshKeys:       map[string]bool{},
 		pinnedAttention: map[string]bool{},
@@ -151,6 +155,9 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, nil
 		}
+		if a.review.open {
+			return a, a.updateReviewKeys(m)
+		}
 		return a, a.routeKey(m)
 	}
 
@@ -173,21 +180,29 @@ func (a *app) View() string {
 	}
 	rendered := appStyle.Render(body) + "\n" + lipgloss.NewStyle().Faint(true).Render(a.footer())
 
+	if a.review.open {
+		rendered = centerOverlay(rendered, a.renderReviewModal(), a.width, a.height)
+	}
 	if a.help.open {
-		box := a.help.Render(a)
-		boxW := lipgloss.Width(box)
-		boxH := lipgloss.Height(box)
-		x := (a.width - boxW) / 2
-		if x < 0 {
-			x = 0
-		}
-		y := (a.height - boxH) / 2
-		if y < 0 {
-			y = 0
-		}
-		return overlay(rendered, box, x, y)
+		rendered = centerOverlay(rendered, a.help.Render(a), a.width, a.height)
 	}
 	return rendered
+}
+
+// centerOverlay paints fg centered over bg, clamped to width/height. Used
+// for app-level modals (help, review).
+func centerOverlay(bg, fg string, width, height int) string {
+	boxW := lipgloss.Width(fg)
+	boxH := lipgloss.Height(fg)
+	x := (width - boxW) / 2
+	if x < 0 {
+		x = 0
+	}
+	y := (height - boxH) / 2
+	if y < 0 {
+		y = 0
+	}
+	return overlay(bg, fg, x, y)
 }
 
 // --- routing ---
@@ -326,6 +341,9 @@ func (a *app) markSessionFileDone(path string) {
 func (a *app) footer() string {
 	if a.statusMsg != "" {
 		return a.statusMsg
+	}
+	if a.review.open {
+		return "review modal — tab: cycle event   ctrl+s: submit   esc: cancel"
 	}
 	switch a.activeView {
 	case viewTodo:
