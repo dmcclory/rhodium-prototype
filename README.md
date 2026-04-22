@@ -38,6 +38,10 @@ Minimal example:
 }
 ```
 
+For configuring agent harnesses (Claude, opencode, custom scripts) and
+defining new actions, see
+[docs/configuring-harnesses.md](docs/configuring-harnesses.md).
+
 Full example with everything the nvim integration needs:
 
 ```json
@@ -115,8 +119,14 @@ rhodium
 
 - Todo dashboard → PRs list → files → diff.
 - In diff view: `space`/`x` mark hunk + advance, `m` mark all, `u`
-  unmark all, `c` add a note, `d` toggle catch-up vs full diff,
-  `o` open the current file in nvim at the current hunk.
+  unmark all, `c` add a note, `P` publish the note at the cursor as a
+  GitHub inline comment, `d` toggle catch-up vs full diff, `o` open the
+  current file in nvim at the current hunk.
+- While writing a note (`c`), press `ctrl+a` to pick a contributor to
+  @-mention — the list is fetched from GitHub the first time you use it
+  in a session and cached after.
+- In PR list view: `A` opens a review modal (approve / request-changes /
+  comment-only). `tab` cycles the event type; `ctrl+s` submits.
 - While a PR is selected, rhodium polls the brain every ~500ms so
   marks made in a separate nvim (tmux split/window) show up live.
 
