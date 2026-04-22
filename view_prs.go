@@ -5,30 +5,99 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // --- prsView ---
 
 type prsView struct {
-	list list.Model
+	list   list.Model
+	review reviewModal
+}
+
+// reviewModal is a small overlay that lets the reviewer submit a PR review
+// (approve / request-changes / comment-only). The event type is cycled with
+// tab so the most-common case (APPROVE, body-less) is just `A tab ctrl+s`
+// — or even `A ctrl+s` since APPROVE is the default.
+type reviewModal struct {
+	open     bool
+	event    ReviewEvent
+	body     textarea.Model
+	pr       *PR // captured at open time so re-selects don't shift target
+	inflight bool
+}
+
+func newReviewModal() reviewModal {
+	ti := textarea.New()
+	ti.Placeholder = "Review summary (optional for APPROVE, required otherwise)"
+	ti.SetHeight(4)
+	ti.ShowLineNumbers = false
+	return reviewModal{event: ReviewApprove, body: ti}
 }
 
 func newPRsView() prsView {
 	l := list.New(nil, compactDelegate(), 0, 0)
 	l.SetShowHelp(false)
-	return prsView{list: l}
+	return prsView{list: l, review: newReviewModal()}
 }
 
 func (v *prsView) Resize(w, h int) { v.list.SetSize(w, h) }
 
-func (v *prsView) View(a *app) string { return v.list.View() }
+var reviewBoxStyle = lipgloss.NewStyle().
+	Border(lipgloss.RoundedBorder()).
+	BorderForeground(lipgloss.Color("63")).
+	Padding(1, 2)
+
+func (v *prsView) View(a *app) string {
+	body := v.list.View()
+	if !v.review.open {
+		return body
+	}
+	box := v.renderReviewModal()
+	boxW := lipgloss.Width(box)
+	boxH := lipgloss.Height(box)
+	x := (a.width - boxW) / 2
+	if x < 0 {
+		x = 0
+	}
+	y := (a.height - boxH) / 2
+	if y < 0 {
+		y = 0
+	}
+	return overlay(body, box, x, y)
+}
+
+func (v *prsView) renderReviewModal() string {
+	prLabel := "(no PR)"
+	if v.review.pr != nil {
+		prLabel = fmt.Sprintf("%s#%d — %s", v.review.pr.Repo, v.review.pr.Number, v.review.pr.Title)
+	}
+	status := ""
+	if v.review.inflight {
+		status = "  (submitting…)"
+	}
+	header := lipgloss.NewStyle().Bold(true).Render("Review: "+prLabel) + "\n"
+	event := fmt.Sprintf("Event: [%s]   (tab cycles: APPROVE → REQUEST_CHANGES → COMMENT)%s", v.review.event, status)
+	hints := lipgloss.NewStyle().Faint(true).Render("ctrl+s: submit   esc: cancel")
+	return reviewBoxStyle.Render(header + event + "\n\n" + v.review.body.View() + "\n" + hints)
+}
 
 func (v *prsView) Footer(a *app) string {
-	return "l/enter: open  s: scrutiny  h/esc: back to todo  q: quit"
+	if v.review.open {
+		return "review modal — tab: cycle event   ctrl+s: submit   esc: cancel"
+	}
+	return "l/enter: open  A: approve/review  s: scrutiny  h/esc: back to todo  q: quit"
 }
 
 func (v *prsView) Update(a *app, msg tea.Msg) tea.Cmd {
+	if v.review.open {
+		if key, ok := msg.(tea.KeyMsg); ok {
+			return v.updateReviewKeys(a, key)
+		}
+		return nil
+	}
 	key, isKey := msg.(tea.KeyMsg)
 	if !isKey {
 		return v.delegate(msg)
@@ -38,6 +107,60 @@ func (v *prsView) Update(a *app, msg tea.Msg) tea.Cmd {
 		return cmd
 	}
 	return v.delegate(msg)
+}
+
+// updateReviewKeys routes keys while the review modal is open. The body
+// textarea consumes everything except the control keys listed here.
+func (v *prsView) updateReviewKeys(a *app, msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "esc":
+		v.review.open = false
+		v.review.body.Blur()
+		return nil
+	case "tab":
+		// Cycle APPROVE → REQUEST_CHANGES → COMMENT → APPROVE.
+		switch v.review.event {
+		case ReviewApprove:
+			v.review.event = ReviewRequestChanges
+		case ReviewRequestChanges:
+			v.review.event = ReviewComment
+		default:
+			v.review.event = ReviewApprove
+		}
+		return nil
+	case "ctrl+s":
+		return v.submitReviewFromModal(a)
+	}
+	var cmd tea.Cmd
+	v.review.body, cmd = v.review.body.Update(msg)
+	return cmd
+}
+
+// submitReviewFromModal validates and fires submitReview asynchronously.
+// GitHub rejects an empty body with REQUEST_CHANGES or COMMENT, so we
+// guard that locally rather than letting the round-trip error back.
+func (v *prsView) submitReviewFromModal(a *app) tea.Cmd {
+	if v.review.pr == nil {
+		a.statusMsg = "review: no PR captured"
+		return nil
+	}
+	body := strings.TrimSpace(v.review.body.Value())
+	if body == "" && v.review.event != ReviewApprove {
+		a.statusMsg = fmt.Sprintf("review: %s requires a body", v.review.event)
+		return nil
+	}
+	pr := *v.review.pr
+	event := v.review.event
+	v.review.inflight = true
+	a.statusMsg = fmt.Sprintf("submitting %s on %s#%d…", event, pr.Repo, pr.Number)
+	// Close the modal immediately — the async result lands on the status line.
+	v.review.open = false
+	v.review.body.Blur()
+	v.review.inflight = false
+	return func() tea.Msg {
+		err := submitReview(pr.Repo, pr.Number, event, body)
+		return reviewSubmittedMsg{repo: pr.Repo, prNum: pr.Number, event: event, err: err}
+	}
 }
 
 func (v *prsView) bindings(a *app) []Binding {
@@ -58,6 +181,22 @@ func (v *prsView) bindings(a *app) []Binding {
 					return a.openPR(it.pr)
 				}
 				return nil
+			},
+		},
+		{
+			Name: "review", Keys: []string{"A"},
+			Desc: "open review modal (approve / request-changes / comment)", Group: "View",
+			Action: func(a *app) tea.Cmd {
+				it, ok := v.list.SelectedItem().(prItem)
+				if !ok {
+					return nil
+				}
+				pr := it.pr
+				v.review.pr = &pr
+				v.review.event = ReviewApprove
+				v.review.body.Reset()
+				v.review.open = true
+				return v.review.body.Focus()
 			},
 		},
 		{

@@ -987,15 +987,16 @@ func (b *Brain) SetPRCache(prs []PR) error {
 }
 
 type Note struct {
-	ID         int64  `json:"id"`
-	PRKey      string `json:"pr_key"`
-	Path       string `json:"path"`
-	LineNo     int    `json:"line_no"`
-	LineHash   string `json:"line_hash"`
-	Body       string `json:"body"`
-	Source     string `json:"source"` // "human" (typed via `c`) or "agent" (first-pass review)
-	CreatedAt  string `json:"created_at"`
-	ResolvedAt string `json:"resolved_at,omitempty"`
+	ID              int64  `json:"id"`
+	PRKey           string `json:"pr_key"`
+	Path            string `json:"path"`
+	LineNo          int    `json:"line_no"`
+	LineHash        string `json:"line_hash"`
+	Body            string `json:"body"`
+	Source          string `json:"source"` // "human" (typed via `c`) or "agent" (first-pass review)
+	CreatedAt       string `json:"created_at"`
+	ResolvedAt      string `json:"resolved_at,omitempty"`
+	GitHubCommentID int64  `json:"github_comment_id,omitempty"` // 0 = local only; else the id GitHub returned
 }
 
 // NoteFilter controls whether NotesForPR / NotesForFile / PRKeysWithNotes
@@ -1041,7 +1042,7 @@ func (b *Brain) NoteCountForFile(repo string, pr int, path string) int {
 
 func (b *Brain) NotesForPR(repo string, pr int, filter NoteFilter) []Note {
 	key := prKey(repo, pr)
-	q := `SELECT id, pr_key, path, line_no, line_hash, body, source, created_at, resolved_at FROM notes WHERE pr_key = ?`
+	q := `SELECT id, pr_key, path, line_no, line_hash, body, source, created_at, resolved_at, github_comment_id FROM notes WHERE pr_key = ?`
 	if filter == NotesActive {
 		q += ` AND resolved_at IS NULL`
 	}
@@ -1055,9 +1056,13 @@ func (b *Brain) NotesForPR(repo string, pr int, filter NoteFilter) []Note {
 	for rows.Next() {
 		var n Note
 		var resolved sql.NullString
-		if rows.Scan(&n.ID, &n.PRKey, &n.Path, &n.LineNo, &n.LineHash, &n.Body, &n.Source, &n.CreatedAt, &resolved) == nil {
+		var ghID sql.NullInt64
+		if rows.Scan(&n.ID, &n.PRKey, &n.Path, &n.LineNo, &n.LineHash, &n.Body, &n.Source, &n.CreatedAt, &resolved, &ghID) == nil {
 			if resolved.Valid {
 				n.ResolvedAt = resolved.String
+			}
+			if ghID.Valid {
+				n.GitHubCommentID = ghID.Int64
 			}
 			out = append(out, n)
 		}
@@ -1068,7 +1073,7 @@ func (b *Brain) NotesForPR(repo string, pr int, filter NoteFilter) []Note {
 func (b *Brain) NotesForFile(repo string, pr int, path string) []Note {
 	key := prKey(repo, pr)
 	rows, err := b.db.Query(
-		`SELECT id, pr_key, path, line_no, line_hash, body, source, created_at, resolved_at
+		`SELECT id, pr_key, path, line_no, line_hash, body, source, created_at, resolved_at, github_comment_id
 		 FROM notes WHERE pr_key = ? AND path = ? AND resolved_at IS NULL ORDER BY line_no, id`,
 		key, path)
 	if err != nil {
@@ -1079,9 +1084,13 @@ func (b *Brain) NotesForFile(repo string, pr int, path string) []Note {
 	for rows.Next() {
 		var n Note
 		var resolved sql.NullString
-		if rows.Scan(&n.ID, &n.PRKey, &n.Path, &n.LineNo, &n.LineHash, &n.Body, &n.Source, &n.CreatedAt, &resolved) == nil {
+		var ghID sql.NullInt64
+		if rows.Scan(&n.ID, &n.PRKey, &n.Path, &n.LineNo, &n.LineHash, &n.Body, &n.Source, &n.CreatedAt, &resolved, &ghID) == nil {
 			if resolved.Valid {
 				n.ResolvedAt = resolved.String
+			}
+			if ghID.Valid {
+				n.GitHubCommentID = ghID.Int64
 			}
 			out = append(out, n)
 		}
@@ -1128,6 +1137,41 @@ func (b *Brain) insertNote(key, path string, lineNo int, lineHash, body, source 
 // these filterable away from human notes in future UI work.
 func (b *Brain) SaveAgentNote(repo string, pr int, path string, lineNo int, body string) error {
 	return b.insertNote(prKey(repo, pr), path, lineNo, "", body, "agent")
+}
+
+// SetNoteGitHubCommentID stamps the id GitHub returned on the note, so we
+// know the note has been published and can skip it on re-publish. Idempotent:
+// re-stamping the same id is a no-op and emits no event.
+func (b *Brain) SetNoteGitHubCommentID(id, ghID int64) error {
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var key, path string
+	var existing sql.NullInt64
+	switch err = tx.QueryRow(
+		`SELECT pr_key, path, github_comment_id FROM notes WHERE id = ?`, id,
+	).Scan(&key, &path, &existing); err {
+	case sql.ErrNoRows:
+		return fmt.Errorf("note %d not found", id)
+	case nil:
+	default:
+		return err
+	}
+	if existing.Valid && existing.Int64 == ghID {
+		return nil
+	}
+	if _, err := tx.Exec(`UPDATE notes SET github_comment_id = ? WHERE id = ?`, ghID, id); err != nil {
+		return err
+	}
+	if err := logEvent(tx, "note.publish", key, path, map[string]any{
+		"note_id":           id,
+		"github_comment_id": ghID,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ResolveNote marks a note as resolved (soft delete — the row stays so

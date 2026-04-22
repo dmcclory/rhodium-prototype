@@ -106,12 +106,17 @@ func notesByLine(notes []Note) map[int][]Note {
 
 func renderNoteLines(b *strings.Builder, notes []Note, lineNum *int, lineMap *[]int) {
 	for _, n := range notes {
-		for i, line := range strings.Split(n.Body, "\n") {
+		lines := strings.Split(n.Body, "\n")
+		for i, line := range lines {
 			prefix := "  \u2503 "
 			if i == 0 {
 				prefix = "  \u2503 RH: "
 			}
-			b.WriteString(noteStyle.Render(prefix+line) + "\n")
+			rendered := prefix + line
+			if i == len(lines)-1 && n.GitHubCommentID != 0 {
+				rendered += "  [→GH]"
+			}
+			b.WriteString(noteStyle.Render(rendered) + "\n")
 			*lineMap = append(*lineMap, 0)
 			*lineNum++
 		}

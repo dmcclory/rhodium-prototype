@@ -74,3 +74,30 @@ type inlineNotesReadyMsg struct {
 	pr     PR
 	notes  []agentNote
 }
+
+// notePublishedMsg lands back on the update loop after a single inline
+// comment POST finishes. noteID is the local notes.id; ghID is whatever
+// GitHub returned (0 on error). err is nil on success.
+type notePublishedMsg struct {
+	noteID int64
+	ghID   int64
+	err    error
+}
+
+// reviewSubmittedMsg lands back on the update loop after submitReview
+// returns. event echoes what we asked for (for the status line); err is
+// nil on success.
+type reviewSubmittedMsg struct {
+	repo   string
+	prNum  int
+	event  ReviewEvent
+	err    error
+}
+
+// contributorsLoadedMsg lands back on the update loop after a contributors
+// fetch completes. Results are cached on *app keyed by repo.
+type contributorsLoadedMsg struct {
+	repo         string
+	contributors []Contributor
+	err          error
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -253,6 +254,132 @@ func pickAuthor(login, name string) string {
 		return login
 	}
 	return name
+}
+
+// Contributor is a flattened row from GET repos/:o/:r/contributors. Login
+// is the @-mention handle; Contributions drives sort order in the picker.
+type Contributor struct {
+	Login         string
+	Contributions int
+}
+
+type ghAPIContributor struct {
+	Login         string `json:"login"`
+	Contributions int    `json:"contributions"`
+}
+
+// listContributors pulls up to a few hundred contributors via the GitHub API
+// (sorted by contribution count, descending — GitHub's default). One call
+// per repo is cached on *app for the rest of the session; this function has
+// no caching of its own.
+func listContributors(repo string) ([]Contributor, error) {
+	out, err := exec.Command("gh", "api",
+		"--paginate",
+		fmt.Sprintf("repos/%s/contributors?per_page=100", repo),
+	).Output()
+	if err != nil {
+		return nil, fmt.Errorf("gh api contributors %s: %w", repo, err)
+	}
+	// --paginate concatenates JSON arrays by stripping the outer brackets
+	// between pages, but `gh` already emits one valid array for us when the
+	// response fits in a single page. For multi-page it emits a single merged
+	// array, so a plain unmarshal handles both cases.
+	var items []ghAPIContributor
+	if err := json.Unmarshal(out, &items); err != nil {
+		return nil, fmt.Errorf("parse contributors json: %w", err)
+	}
+	contribs := make([]Contributor, 0, len(items))
+	for _, it := range items {
+		if it.Login == "" {
+			continue // anonymous contributors have no login
+		}
+		contribs = append(contribs, Contributor{Login: it.Login, Contributions: it.Contributions})
+	}
+	return contribs, nil
+}
+
+// InlineComment is the payload for POST pulls/:n/comments. commit_id must be
+// a sha that's part of the PR (typically HeadSHA). path is the file relative
+// to the repo root; line is the new-file (post-change) line number — same
+// numbering human notes already use.
+type InlineComment struct {
+	Body     string
+	Path     string
+	CommitID string
+	Line     int
+}
+
+type ghAPIComment struct {
+	ID int64 `json:"id"`
+}
+
+// postInlineComment posts a single PR review comment tied to a specific line.
+// Returns the GitHub comment id so the caller can stamp it onto the local
+// note. We pass side=RIGHT because notes anchor to new-file line numbers.
+//
+// This is a "standalone" comment (not part of a pending review) — it becomes
+// visible on the PR immediately. If you want batch semantics, switch to the
+// reviews endpoint with `comments: [...]`, but the user explicitly asked for
+// fire-and-forget per-comment publication.
+func postInlineComment(repo string, prNum int, c InlineComment) (int64, error) {
+	args := []string{
+		"api",
+		"--method", "POST",
+		fmt.Sprintf("repos/%s/pulls/%d/comments", repo, prNum),
+		"-f", "body=" + c.Body,
+		"-f", "commit_id=" + c.CommitID,
+		"-f", "path=" + c.Path,
+		"-f", "side=RIGHT",
+		"-F", fmt.Sprintf("line=%d", c.Line),
+	}
+	cmd := exec.Command("gh", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return 0, fmt.Errorf("gh api post comment %s#%d %s:%d: %w (%s)", repo, prNum, c.Path, c.Line, err, strings.TrimSpace(stderr.String()))
+	}
+	var got ghAPIComment
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		return 0, fmt.Errorf("parse comment response: %w", err)
+	}
+	if got.ID == 0 {
+		return 0, fmt.Errorf("comment posted but no id in response")
+	}
+	return got.ID, nil
+}
+
+// ReviewEvent is the `event` field of POST pulls/:n/reviews. GitHub accepts
+// APPROVE, REQUEST_CHANGES, COMMENT, or PENDING (we don't expose PENDING —
+// nothing in the UI would let you come back and finish it).
+type ReviewEvent string
+
+const (
+	ReviewApprove        ReviewEvent = "APPROVE"
+	ReviewRequestChanges ReviewEvent = "REQUEST_CHANGES"
+	ReviewComment        ReviewEvent = "COMMENT"
+)
+
+// submitReview submits a PR review with the given event. body may be empty
+// for APPROVE; GitHub rejects an empty body with REQUEST_CHANGES/COMMENT so
+// the caller should validate before calling.
+func submitReview(repo string, prNum int, event ReviewEvent, body string) error {
+	args := []string{
+		"api",
+		"--method", "POST",
+		fmt.Sprintf("repos/%s/pulls/%d/reviews", repo, prNum),
+		"-f", "event=" + string(event),
+	}
+	if body != "" {
+		args = append(args, "-f", "body="+body)
+	}
+	cmd := exec.Command("gh", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gh api submit review %s#%d %s: %w (%s)", repo, prNum, event, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
 }
 
 func fetchBlob(repo, sha string) (string, error) {

@@ -56,6 +56,11 @@ type app struct {
 
 	reviewSession *ReviewSession
 
+	// contributors caches the per-repo contributor list fetched on first
+	// use of the @-mention picker. Lifetime is the app session; a restart
+	// re-fetches. Map key is "owner/repo".
+	contributors map[string][]Contributor
+
 	statusMsg string
 
 	// pollGen increments every time a PR is opened; the polling tick
@@ -76,6 +81,7 @@ func newApp(cfg *Config, brain *Brain) *app {
 		prFiles:         map[string][]FileChange{},
 		freshKeys:       map[string]bool{},
 		pinnedAttention: map[string]bool{},
+		contributors:    map[string][]Contributor{},
 	}
 
 	cached := brain.CachedPRs()
@@ -128,6 +134,12 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.onActionDone(m)
 	case inlineNotesReadyMsg:
 		return a, a.onInlineNotesReady(m)
+	case notePublishedMsg:
+		return a, a.onNotePublished(m)
+	case reviewSubmittedMsg:
+		return a, a.onReviewSubmitted(m)
+	case contributorsLoadedMsg:
+		return a, a.onContributorsLoaded(m)
 	case pollTickMsg:
 		return a, a.onPollTick(m)
 
@@ -447,6 +459,56 @@ func (a *app) onInlineNotesReady(msg inlineNotesReadyMsg) tea.Cmd {
 	if a.activeView == viewDiff && a.selectedFile != "" {
 		a.diff.notes = a.brain.NotesForFile(msg.pr.Repo, msg.pr.Number, a.selectedFile)
 		a.diff.redraw()
+	}
+	return nil
+}
+
+// onNotePublished lands after a single inline-comment POST. On success we
+// stamp the github_comment_id onto the local note so the next press of P
+// won't re-publish it, and refresh the diff so the "→GH" marker shows up.
+func (a *app) onNotePublished(msg notePublishedMsg) tea.Cmd {
+	if msg.err != nil {
+		a.statusMsg = "publish: " + msg.err.Error()
+		return nil
+	}
+	if err := a.brain.SetNoteGitHubCommentID(msg.noteID, msg.ghID); err != nil {
+		a.statusMsg = "publish saved on GitHub but local stamp failed: " + err.Error()
+		return nil
+	}
+	if a.activeView == viewDiff && a.selectedPR != nil && a.selectedFile != "" {
+		a.diff.notes = a.brain.NotesForFile(a.selectedPR.Repo, a.selectedPR.Number, a.selectedFile)
+		a.diff.redraw()
+	}
+	a.statusMsg = fmt.Sprintf("published note → GitHub #%d", msg.ghID)
+	return nil
+}
+
+// onReviewSubmitted lands after submitReview returns. The PR list doesn't
+// re-fetch state — GitHub's approval status isn't rendered in the TUI
+// today — but the status line confirms what shipped.
+func (a *app) onReviewSubmitted(msg reviewSubmittedMsg) tea.Cmd {
+	if msg.err != nil {
+		a.statusMsg = "review: " + msg.err.Error()
+		return nil
+	}
+	a.statusMsg = fmt.Sprintf("review submitted: %s on %s#%d", msg.event, msg.repo, msg.prNum)
+	return nil
+}
+
+// onContributorsLoaded caches contributors for the repo so future mention
+// picks are instant. Errors surface on the status line but don't block
+// further attempts — the next ctrl+a will re-fetch.
+func (a *app) onContributorsLoaded(msg contributorsLoadedMsg) tea.Cmd {
+	if msg.err != nil {
+		a.statusMsg = "contributors: " + msg.err.Error()
+		return nil
+	}
+	if a.contributors == nil {
+		a.contributors = map[string][]Contributor{}
+	}
+	a.contributors[msg.repo] = msg.contributors
+	if a.activeView == viewDiff {
+		a.diff.onContributorsReady(a, msg.repo)
 	}
 	return nil
 }

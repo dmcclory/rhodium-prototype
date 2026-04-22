@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // --- diffView ---
@@ -44,6 +46,9 @@ type diffView struct {
 	noting       bool
 	noteLineNo   int
 	noteLineHash string
+
+	// @-mention picker overlay (only meaningful while noting).
+	mention mentionPicker
 }
 
 func newDiffView() diffView {
@@ -54,6 +59,7 @@ func newDiffView() diffView {
 	return diffView{
 		vp:        viewport.New(0, 0),
 		noteInput: ti,
+		mention:   newMentionPicker(),
 	}
 }
 
@@ -64,14 +70,32 @@ func (v *diffView) Resize(w, h int) {
 
 func (v *diffView) View(a *app) string {
 	if v.noting {
-		return v.renderNotingView(a)
+		body := v.renderNotingView(a)
+		if v.mention.open {
+			box := v.mention.Render()
+			boxW := lipgloss.Width(box)
+			boxH := lipgloss.Height(box)
+			x := (a.width - boxW) / 2
+			if x < 0 {
+				x = 0
+			}
+			y := (a.height - boxH) / 2
+			if y < 0 {
+				y = 0
+			}
+			return overlay(body, box, x, y)
+		}
+		return body
 	}
 	return v.vp.View()
 }
 
 func (v *diffView) Footer(a *app) string {
 	if v.noting {
-		return fmt.Sprintf("line %d  ctrl+d: save  esc: cancel", v.noteLineNo)
+		if v.mention.open {
+			return "@-mention  ↑/↓: nav  /: filter  enter: insert  esc: close"
+		}
+		return fmt.Sprintf("line %d  ctrl+d: save  ctrl+a: @mention  esc: cancel", v.noteLineNo)
 	}
 	marked := 0
 	total := 0
@@ -108,7 +132,7 @@ func (v *diffView) Footer(a *app) string {
 			modeHint = "  [full diff]  d: catch-up"
 		}
 	}
-	return fmt.Sprintf("hunk %d/%d  marked %d/%d%s  ↑/↓: nav  j/k: cursor  space: toggle+next  m: mark all  c: note  o: open in editor  u: unmark  h: back", cur, total, marked, total, modeHint)
+	return fmt.Sprintf("hunk %d/%d  marked %d/%d%s  ↑/↓: nav  j/k: cursor  space: toggle+next  m: mark all  c: note  P: publish note  o: open  u: unmark  h: back", cur, total, marked, total, modeHint)
 }
 
 // Update routes keys + messages while the diff view is active.
@@ -538,6 +562,10 @@ func (v *diffView) openInEditor(a *app) (tea.Cmd, error) {
 // --- key handling ---
 
 func (v *diffView) updateNotingKeys(a *app, msg tea.KeyMsg) tea.Cmd {
+	// Mention picker is modal over the textarea: routes all keys while open.
+	if v.mention.open {
+		return v.updateMentionKeys(a, msg)
+	}
 	switch msg.String() {
 	case "esc":
 		v.noting = false
@@ -558,9 +586,92 @@ func (v *diffView) updateNotingKeys(a *app, msg tea.KeyMsg) tea.Cmd {
 			}
 		}
 		return nil
+	case "ctrl+a":
+		return v.openMentionPicker(a)
 	}
 	var cmd tea.Cmd
 	v.noteInput, cmd = v.noteInput.Update(msg)
+	return cmd
+}
+
+// openMentionPicker shows the @-picker over the textarea. Contributors are
+// fetched lazily per repo; a second ctrl+a press in the same session uses
+// the cache and is instant.
+func (v *diffView) openMentionPicker(a *app) tea.Cmd {
+	if a.selectedPR == nil {
+		return nil
+	}
+	repo := a.selectedPR.Repo
+	v.mention.open = true
+	if cached, ok := a.contributors[repo]; ok {
+		v.mention.loading = false
+		v.mention.list.SetItems(contributorsToItems(cached))
+		v.sizeMentionPicker(a)
+		return nil
+	}
+	v.mention.loading = true
+	v.mention.list.SetItems(nil)
+	v.sizeMentionPicker(a)
+	return loadContributorsCmd(repo)
+}
+
+// onContributorsReady lands from app.onContributorsLoaded when a fetch
+// returns while the picker is open for the same repo. If the picker has
+// been dismissed in the meantime this is a no-op — the cache is still
+// populated for next time.
+func (v *diffView) onContributorsReady(a *app, repo string) {
+	if !v.mention.open || a.selectedPR == nil || a.selectedPR.Repo != repo {
+		return
+	}
+	v.mention.loading = false
+	v.mention.list.SetItems(contributorsToItems(a.contributors[repo]))
+	v.sizeMentionPicker(a)
+}
+
+func (v *diffView) sizeMentionPicker(a *app) {
+	w := a.width / 2
+	if w < 30 {
+		w = 30
+	}
+	h := 12
+	if a.height < h+4 {
+		h = a.height - 4
+		if h < 5 {
+			h = 5
+		}
+	}
+	v.mention.list.SetSize(w, h)
+}
+
+// updateMentionKeys routes keys while the mention picker is open.
+// esc closes without inserting; enter inserts `@<login> ` at the textarea
+// cursor and closes; typing feeds the list's filter (bubbles/list has its
+// own filter gestures: `/` starts, esc clears, enter applies).
+func (v *diffView) updateMentionKeys(a *app, msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "esc":
+		// If the list is in a filter-editing state, let bubbles consume esc
+		// (clears the filter) before we close the picker.
+		if v.mention.list.FilterState() == list.Filtering {
+			break
+		}
+		v.mention.open = false
+		return nil
+	case "enter":
+		if v.mention.list.FilterState() == list.Filtering {
+			// Let bubbles accept the filter first, then fall through on the
+			// next enter press. Returning the list's update keeps behaviour
+			// consistent with the rest of the app.
+			break
+		}
+		if it, ok := v.mention.list.SelectedItem().(mentionItem); ok {
+			v.noteInput.InsertString("@" + it.login + " ")
+		}
+		v.mention.open = false
+		return nil
+	}
+	var cmd tea.Cmd
+	v.mention.list, cmd = v.mention.list.Update(msg)
 	return cmd
 }
 
@@ -693,6 +804,13 @@ func (v *diffView) bindings(a *app) []Binding {
 			},
 		},
 		{
+			Name: "publish-note", Keys: []string{"P"},
+			Desc: "publish note at cursor to GitHub", Group: "Notes",
+			Action: func(a *app) tea.Cmd {
+				return v.publishNoteAtCursor(a)
+			},
+		},
+		{
 			Name: "note", Keys: []string{"c"},
 			Desc: "add note at cursor", Group: "Notes",
 			Action: func(a *app) tea.Cmd {
@@ -795,6 +913,53 @@ func (v *diffView) restoreSize(a *app) {
 	h, padV := appStyle.GetFrameSize()
 	v.vp.Width = a.width - h
 	v.vp.Height = a.height - padV - 1
+}
+
+// publishNoteAtCursor posts the first unpublished note on the cursor's
+// current file line as a GitHub inline review comment. Per-line selection
+// (vs "everything on the file") is intentional: publication is a decision
+// the reviewer makes per-comment, not in bulk.
+//
+// GitHub anchors inline comments to a (commit_id, path, line) tuple, and
+// only accepts commits that are part of the PR. We use the PR's current
+// HeadSHA; if the PR is rebased later, old comments outline themselves
+// (GitHub's normal behaviour).
+func (v *diffView) publishNoteAtCursor(a *app) tea.Cmd {
+	if a.selectedPR == nil || a.selectedFile == "" {
+		return nil
+	}
+	lineNo := v.cursorFileLine()
+	if lineNo == 0 {
+		a.statusMsg = "cursor not on a file line"
+		return nil
+	}
+	var target *Note
+	for i := range v.notes {
+		n := &v.notes[i]
+		if n.LineNo == lineNo && n.GitHubCommentID == 0 {
+			target = n
+			break
+		}
+	}
+	if target == nil {
+		a.statusMsg = fmt.Sprintf("no unpublished note on line %d", lineNo)
+		return nil
+	}
+	pr := *a.selectedPR
+	path := a.selectedFile
+	noteID := target.ID
+	body := target.Body
+	commit := pr.HeadSHA
+	a.statusMsg = fmt.Sprintf("publishing note on %s:%d…", path, lineNo)
+	return func() tea.Msg {
+		ghID, err := postInlineComment(pr.Repo, pr.Number, InlineComment{
+			Body:     body,
+			Path:     path,
+			CommitID: commit,
+			Line:     lineNo,
+		})
+		return notePublishedMsg{noteID: noteID, ghID: ghID, err: err}
+	}
 }
 
 func firstUnmarked(hunks []Hunk, marks map[string]bool) int {
