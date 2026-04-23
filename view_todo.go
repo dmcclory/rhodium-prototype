@@ -26,7 +26,7 @@ func (v *todoView) Resize(w, h int) { v.list.SetSize(w, h) }
 func (v *todoView) View(a *app) string { return v.list.View() }
 
 func (v *todoView) Footer(a *app) string {
-	return "l/enter: open  A: approve/review  a: all PRs  q: quit"
+	return "l/enter: open  A: approve/review  M: merge  a: all PRs  q: quit"
 }
 
 // Update handles keys for the todo view. Returns the command to run.
@@ -71,6 +71,17 @@ func (v *todoView) bindings(a *app) []Binding {
 					return nil
 				}
 				return a.openReview(it.pr)
+			},
+		},
+		{
+			Name: "merge", Keys: []string{"M"},
+			Desc: "open merge modal (squash / merge / rebase)", Group: "View",
+			Action: func(a *app) tea.Cmd {
+				it, ok := v.list.SelectedItem().(todoItem)
+				if !ok {
+					return nil
+				}
+				return a.openMerge(it.pr)
 			},
 		},
 	}

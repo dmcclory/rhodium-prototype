@@ -46,6 +46,7 @@ type app struct {
 
 	// review modal lives at app level so any list view can open it.
 	review reviewModal
+	merge  mergeModal
 
 	// Shared PR data. prFiles is keyed by "<repo>#<num>".
 	allPRs          []PR
@@ -82,6 +83,7 @@ func newApp(cfg *Config, brain *Brain) *app {
 		files:           newFilesView(),
 		diff:            newDiffView(),
 		review:          newReviewModal(),
+		merge:           newMergeModal(),
 		prFiles:         map[string][]FileChange{},
 		freshKeys:       map[string]bool{},
 		pinnedAttention: map[string]bool{},
@@ -142,6 +144,8 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.onNotePublished(m)
 	case reviewSubmittedMsg:
 		return a, a.onReviewSubmitted(m)
+	case mergeSubmittedMsg:
+		return a, a.onMergeSubmitted(m)
 	case contributorsLoadedMsg:
 		return a, a.onContributorsLoaded(m)
 	case pollTickMsg:
@@ -157,6 +161,9 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if a.review.open {
 			return a, a.updateReviewKeys(m)
+		}
+		if a.merge.open {
+			return a, a.updateMergeKeys(m)
 		}
 		return a, a.routeKey(m)
 	}
@@ -182,6 +189,9 @@ func (a *app) View() string {
 
 	if a.review.open {
 		rendered = centerOverlay(rendered, a.renderReviewModal(), a.width, a.height)
+	}
+	if a.merge.open {
+		rendered = centerOverlay(rendered, a.renderMergeModal(), a.width, a.height)
 	}
 	if a.help.open {
 		rendered = centerOverlay(rendered, a.help.Render(a), a.width, a.height)
@@ -344,6 +354,9 @@ func (a *app) footer() string {
 	}
 	if a.review.open {
 		return "review modal — tab: cycle event   ctrl+s: submit   esc: cancel"
+	}
+	if a.merge.open {
+		return "merge modal — tab: cycle method   ctrl+s: merge   esc: cancel"
 	}
 	switch a.activeView {
 	case viewTodo:
@@ -510,6 +523,32 @@ func (a *app) onReviewSubmitted(msg reviewSubmittedMsg) tea.Cmd {
 		return nil
 	}
 	a.statusMsg = fmt.Sprintf("review submitted: %s on %s#%d", msg.event, msg.repo, msg.prNum)
+	return nil
+}
+
+// onMergeSubmitted lands after mergePR returns. On success we drop the PR
+// from allPRs locally so it disappears from the lists without a full
+// refetch — the next background refresh would catch it anyway, but that's
+// not instant enough for the "M ctrl+s" feedback loop.
+func (a *app) onMergeSubmitted(msg mergeSubmittedMsg) tea.Cmd {
+	if msg.err != nil {
+		a.statusMsg = "merge: " + msg.err.Error()
+		return nil
+	}
+	a.statusMsg = fmt.Sprintf("merged: %s on %s#%d", msg.method, msg.repo, msg.prNum)
+	key := prKey(msg.repo, msg.prNum)
+	kept := a.allPRs[:0]
+	for _, p := range a.allPRs {
+		if prKey(p.Repo, p.Number) != key {
+			kept = append(kept, p)
+		}
+	}
+	a.allPRs = kept
+	delete(a.freshKeys, key)
+	delete(a.prFiles, key)
+	delete(a.pinnedAttention, key)
+	a.prs.rebuild(a)
+	go a.brain.SetPRCache(a.allPRs)
 	return nil
 }
 

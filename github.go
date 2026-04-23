@@ -382,6 +382,53 @@ func submitReview(repo string, prNum int, event ReviewEvent, body string) error 
 	return nil
 }
 
+// fetchGitHubUser returns the login of whoever `gh` is authenticated as.
+// Used to auto-populate Config.GitHubUser when the user hasn't set it.
+func fetchGitHubUser() (string, error) {
+	out, err := exec.Command("gh", "api", "user").Output()
+	if err != nil {
+		return "", fmt.Errorf("gh api user: %w", err)
+	}
+	var u struct {
+		Login string `json:"login"`
+	}
+	if err := json.Unmarshal(out, &u); err != nil {
+		return "", fmt.Errorf("parse gh api user: %w", err)
+	}
+	return u.Login, nil
+}
+
+// MergeMethod is the `merge_method` field of PUT pulls/:n/merge.
+type MergeMethod string
+
+const (
+	MergeSquash MergeMethod = "squash"
+	MergeMerge  MergeMethod = "merge"
+	MergeRebase MergeMethod = "rebase"
+)
+
+// mergePR merges a PR. message is the commit message body; empty lets GitHub
+// generate the default (usually the PR body for squash, or a "Merge pull
+// request #N" line for merge commits).
+func mergePR(repo string, prNum int, method MergeMethod, message string) error {
+	args := []string{
+		"api",
+		"--method", "PUT",
+		fmt.Sprintf("repos/%s/pulls/%d/merge", repo, prNum),
+		"-f", "merge_method=" + string(method),
+	}
+	if message != "" {
+		args = append(args, "-f", "commit_message="+message)
+	}
+	cmd := exec.Command("gh", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gh api merge %s#%d %s: %w (%s)", repo, prNum, method, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
 func fetchBlob(repo, sha string) (string, error) {
 	out, err := exec.Command("gh", "api",
 		fmt.Sprintf("repos/%s/git/blobs/%s", repo, sha),

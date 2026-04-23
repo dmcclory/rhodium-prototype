@@ -27,7 +27,7 @@ func (v *prsView) View(a *app) string {
 }
 
 func (v *prsView) Footer(a *app) string {
-	return "l/enter: open  A: approve/review  s: scrutiny  h/esc: back to todo  q: quit"
+	return "l/enter: open  A: approve/review  M: merge  s: scrutiny  h/esc: back to todo  q: quit"
 }
 
 func (v *prsView) Update(a *app, msg tea.Msg) tea.Cmd {
@@ -71,6 +71,17 @@ func (v *prsView) bindings(a *app) []Binding {
 					return nil
 				}
 				return a.openReview(it.pr)
+			},
+		},
+		{
+			Name: "merge", Keys: []string{"M"},
+			Desc: "open merge modal (squash / merge / rebase)", Group: "View",
+			Action: func(a *app) tea.Cmd {
+				it, ok := v.list.SelectedItem().(prItem)
+				if !ok {
+					return nil
+				}
+				return a.openMerge(it.pr)
 			},
 		},
 		{
@@ -130,7 +141,8 @@ func (v *prsView) rebuild(a *app) {
 		savedKey = prKey(sel.pr.Repo, sel.pr.Number)
 	}
 
-	var inProgress, untouched []prItem
+	me := a.cfg.GitHubUser
+	var mine, inProgress, untouched []prItem
 	for _, pr := range a.allPRs {
 		it := prItem{pr: pr, noteCount: a.brain.NoteCountForPR(pr.Repo, pr.Number), scrutinized: a.brain.IsScrutinized(pr.Repo, pr.Number)}
 		// A PR is "in progress" if the brain has any marks for it, even
@@ -159,28 +171,29 @@ func (v *prsView) rebuild(a *app) {
 				}
 			}
 		}
-		if looked {
+		switch {
+		case me != "" && pr.Author == me:
+			mine = append(mine, it)
+		case looked:
 			inProgress = append(inProgress, it)
-		} else {
+		default:
 			untouched = append(untouched, it)
 		}
 	}
 
 	var items []list.Item
-	if len(inProgress) > 0 {
-		items = append(items, sectionItem{label: "── in progress ──"})
-		for _, it := range inProgress {
+	appendSection := func(label string, entries []prItem) {
+		if len(entries) == 0 {
+			return
+		}
+		items = append(items, sectionItem{label: label})
+		for _, it := range entries {
 			items = append(items, it)
 		}
 	}
-	if len(untouched) > 0 {
-		if len(inProgress) > 0 {
-			items = append(items, sectionItem{label: "── new ──"})
-		}
-		for _, it := range untouched {
-			items = append(items, it)
-		}
-	}
+	appendSection("── mine ──", mine)
+	appendSection("── in progress ──", inProgress)
+	appendSection("── new ──", untouched)
 	v.list.SetItems(items)
 	if savedKey != "" {
 		for i, it := range items {

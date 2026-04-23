@@ -17,6 +17,11 @@ type Config struct {
 	Agents       []Agent           `json:"agents,omitempty"`
 	DefaultAgent string            `json:"default_agent,omitempty"`
 	Actions      []Action          `json:"actions,omitempty"`
+	// GitHubUser is the reviewer's own login. When set, the PR list splits
+	// "mine" out from everyone else's work. Auto-detected from `gh api user`
+	// on startup when left blank.
+	GitHubUser string      `json:"github_user,omitempty"`
+	Merge      MergeConfig `json:"merge,omitempty"`
 }
 
 // Agent is a coding-assistant binary (claude, opencode, etc). Actions pick
@@ -54,6 +59,11 @@ type EditorConfig struct {
 	Command string `json:"command,omitempty"` // default: nvim
 }
 
+type MergeConfig struct {
+	// DefaultMethod: "squash" | "merge" | "rebase". Empty → "squash".
+	DefaultMethod string `json:"default_method,omitempty"`
+}
+
 func (c *Config) WorktreeRoot() string {
 	if c.Worktree.Root != "" {
 		return expandHome(c.Worktree.Root)
@@ -74,6 +84,14 @@ func (c *Config) TmuxMode() string {
 		return c.Tmux.Mode
 	}
 	return "window"
+}
+
+func (c *Config) MergeMethodResolved() string {
+	switch c.Merge.DefaultMethod {
+	case "merge", "squash", "rebase":
+		return c.Merge.DefaultMethod
+	}
+	return "squash"
 }
 
 // defaultAgents / defaultActions ship built-in so the `t` chat and `f` first-pass

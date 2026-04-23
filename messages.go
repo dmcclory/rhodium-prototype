@@ -94,6 +94,16 @@ type reviewSubmittedMsg struct {
 	err    error
 }
 
+// mergeSubmittedMsg lands back on the update loop after mergePR returns.
+// The PR is not removed from allPRs here — the next repo refresh drops it
+// when GitHub stops listing it as open.
+type mergeSubmittedMsg struct {
+	repo   string
+	prNum  int
+	method MergeMethod
+	err    error
+}
+
 // contributorsLoadedMsg lands back on the update loop after a contributors
 // fetch completes. Results are cached on *app keyed by repo.
 type contributorsLoadedMsg struct {

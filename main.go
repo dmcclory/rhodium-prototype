@@ -21,6 +21,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	if cfg.GitHubUser == "" {
+		if login, err := fetchGitHubUser(); err == nil {
+			cfg.GitHubUser = login
+		} else {
+			fmt.Fprintln(os.Stderr, "warning: could not detect GitHub user — set `github_user` in config to split your PRs:", err)
+		}
+	}
 	brain, err := LoadBrain()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
