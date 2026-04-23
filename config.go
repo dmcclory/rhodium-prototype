@@ -30,6 +30,12 @@ type Agent struct {
 	Name        string   `json:"name"`
 	Command     string   `json:"command"`
 	OneshotArgs []string `json:"oneshot_args,omitempty"` // flags for non-interactive mode (e.g. claude's -p)
+	// InteractiveArgs are flags inserted between the command and the
+	// prompt in interactive mode, so the cmdline is
+	// `<command> <interactive_args...> "$(cat <prompt-file>)"`. Needed for
+	// agents that won't accept a bare positional prompt — e.g. opencode
+	// treats positional args as project paths and needs `--prompt`.
+	InteractiveArgs []string `json:"interactive_args,omitempty"`
 }
 
 // Action binds a keypress to an agent invocation shape. The action describes

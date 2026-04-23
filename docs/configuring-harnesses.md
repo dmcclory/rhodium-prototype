@@ -32,22 +32,27 @@ any agents or any actions, you own the whole list.
 {
   "agents": [
     { "name": "claude",   "command": "claude",   "oneshot_args": ["-p"] },
-    { "name": "opencode", "command": "opencode", "oneshot_args": ["run"] }
+    { "name": "opencode", "command": "opencode", "oneshot_args": ["run"], "interactive_args": ["--prompt"] }
   ],
   "default_agent": "opencode"
 }
 ```
 
-| Field          | Meaning                                                            |
-|----------------|--------------------------------------------------------------------|
-| `name`         | Stable id referenced by `default_agent`. Shown in the status bar. |
-| `command`      | Binary on `$PATH` or absolute path.                                |
-| `oneshot_args` | Flags added in `oneshot` mode so the binary reads prompt on stdin. |
+| Field              | Meaning                                                                         |
+|--------------------|---------------------------------------------------------------------------------|
+| `name`             | Stable id referenced by `default_agent`. Shown in the status bar.              |
+| `command`          | Binary on `$PATH` or absolute path.                                             |
+| `oneshot_args`     | Flags added in `oneshot` mode so the binary reads prompt on stdin.              |
+| `interactive_args` | Flags inserted before the prompt in `interactive` mode (e.g. opencode's `--prompt`). |
 
 In **interactive** mode (`delivery: tmux`), rhodium runs the agent as
-`<command> "$(cat <prompt-file>)"` — i.e. the rendered prompt arrives as
-a single positional arg. This works for agents like Claude whose interactive
-mode accepts a seed prompt as argv.
+`<command> <interactive_args...> "$(cat <prompt-file>)"` — the rendered
+prompt arrives as a single positional arg. For claude, no
+`interactive_args` are needed; its interactive mode takes a bare
+positional seed prompt. For opencode, set `"interactive_args":
+["--prompt"]` so the prompt goes through its `--prompt` flag (which
+starts the TUI, seeds the prompt, and auto-submits). Without it
+opencode would treat the prompt text as a project path.
 
 In **oneshot** mode (`delivery: inline-notes`), rhodium runs
 `<command> <oneshot_args...>` with the prompt piped on stdin.
@@ -124,14 +129,18 @@ malformed prompt in your agent's logs).
 {
   "repos": ["cli/cli"],
   "agents": [
-    { "name": "opencode", "command": "opencode", "oneshot_args": ["run"] }
+    { "name": "opencode", "command": "opencode", "oneshot_args": ["run"], "interactive_args": ["--prompt"] }
   ],
   "default_agent": "opencode"
 }
 ```
 
 No changes to `actions` needed — the built-ins will run through opencode
-now. `t` still opens a chat; `f` still runs a first-pass review.
+now. `t` still opens a chat; `f` still runs a first-pass review. The
+`"interactive_args": ["--prompt"]` is important: opencode treats bare
+positional args as project paths, so the prompt has to go through its
+`--prompt` flag (which opens the TUI, seeds the prompt, and
+auto-submits).
 
 ## Worked example 2 — custom security-review action
 

@@ -59,18 +59,26 @@ func runAction(a *app, action Action) (tea.Cmd, error) {
 // runInteractiveAction spawns a tmux pane in the worktree and starts the
 // agent with the rendered prompt. The prompt is written to a file under
 // $TMPDIR so it survives the tmux handoff and remains inspectable if the
-// session is resumed. We invoke the agent as `<cmd> "$(cat <file>)"` so the
-// prompt arrives as one argv slot; this works for agents (like claude) whose
-// interactive mode accepts a positional seed prompt.
+// session is resumed. We invoke the agent as
+// `<cmd> <interactive_args...> "$(cat <file>)"` so the prompt arrives as
+// one argv slot — bare for claude, behind `--prompt` for opencode.
 func runInteractiveAction(a *app, action Action, agent Agent, worktree string, pr PR, prompt string) (tea.Cmd, error) {
 	promptPath, err := writePromptFile(pr, action.Name, prompt)
 	if err != nil {
 		return nil, err
 	}
 
+	// Agents that won't accept the prompt as a bare positional arg (opencode
+	// uses --prompt, for example) supply interactive_args; those slot in
+	// between the command and the $(cat …) positional.
+	head := shellQuote(agent.Command)
+	if len(agent.InteractiveArgs) > 0 {
+		head += " " + shellJoin(agent.InteractiveArgs)
+	}
+	cmdline := fmt.Sprintf("%s \"$(cat %s)\"", head, shellQuote(promptPath))
+
 	if os.Getenv("TMUX") == "" || a.cfg.TmuxMode() == "off" {
-		// No tmux — fall back to suspending the TUI and running inline.
-		cmd := exec.Command("sh", "-c", fmt.Sprintf("%s \"$(cat %s)\"", shellQuote(agent.Command), shellQuote(promptPath)))
+		cmd := exec.Command("sh", "-c", cmdline)
 		if worktree != "" {
 			cmd.Dir = worktree
 		}
@@ -81,7 +89,6 @@ func runInteractiveAction(a *app, action Action, agent Agent, worktree string, p
 	}
 
 	label := fmt.Sprintf("%s: %s", action.Name, prKey(pr.Repo, pr.Number))
-	cmdline := fmt.Sprintf("%s \"$(cat %s)\"", shellQuote(agent.Command), shellQuote(promptPath))
 	a.statusMsg = fmt.Sprintf("launching %s (%s) in tmux pane", agent.Name, action.Name)
 	return func() tea.Msg {
 		paneID, err := spawnTmuxPane(a.cfg.TmuxMode(), worktree, label)
