@@ -1,5 +1,5 @@
 BIN      := bin/rhodium
-PKG      := .
+PKG      := ./cmd/rhodium
 GOFLAGS  ?=
 LDFLAGS  ?= -s -w
 
