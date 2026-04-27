@@ -79,11 +79,11 @@ func (v *diffView) View(a *app) string {
 			box := v.mention.Render()
 			boxW := lipgloss.Width(box)
 			boxH := lipgloss.Height(box)
-			x := (a.width - boxW) / 2
+			x := (a.layout.width - boxW) / 2
 			if x < 0 {
 				x = 0
 			}
-			y := (a.height - boxH) / 2
+			y := (a.layout.height - boxH) / 2
 			if y < 0 {
 				y = 0
 			}
@@ -159,7 +159,7 @@ func (v *diffView) Update(a *app, msg tea.Msg) tea.Cmd {
 // the full PR diff.
 func (v *diffView) open(a *app, fc gh.FileChange) tea.Cmd {
 	a.session.selectedFile = fc.Path
-	a.activeView = viewDiff
+	a.layout.focus(viewDiff)
 	v.blob = ""
 	v.catchUpMode = false
 	v.catchUpOldHead = ""
@@ -253,7 +253,7 @@ func (v *diffView) onCatchUpLoaded(a *app, msg catchUpLoadedMsg) tea.Cmd {
 		a.statusMsg = "catch-up: " + msg.err.Error()
 		return nil
 	}
-	if a.activeView != viewDiff || a.session.selectedFile != msg.path {
+	if a.layout.activeView != viewDiff || a.session.selectedFile != msg.path {
 		return nil
 	}
 	var deltaFC *gh.FileChange
@@ -288,7 +288,7 @@ func (v *diffView) onDiamondClassified(a *app, msg diamondClassifiedMsg) tea.Cmd
 		a.statusMsg = "classify: " + msg.err.Error()
 		return nil
 	}
-	if a.activeView != viewDiff || a.session.selectedFile != msg.path {
+	if a.layout.activeView != viewDiff || a.session.selectedFile != msg.path {
 		return nil
 	}
 	v.catchUpClass = msg.class
@@ -368,7 +368,7 @@ func (v *diffView) onBlobLoaded(a *app, msg blobLoadedMsg) tea.Cmd {
 		a.statusMsg = "blob: " + msg.err.Error()
 		return nil
 	}
-	if a.activeView == viewDiff {
+	if a.layout.activeView == viewDiff {
 		v.blob = msg.content
 		if !v.catchUpMode {
 			v.redraw()
@@ -469,7 +469,7 @@ func (v *diffView) currentSegmentView() (diff.View, bool) {
 
 func (v *diffView) renderNotingView(a *app) string {
 	_, padV := appStyle.GetFrameSize()
-	totalH := a.height - padV - 1 // minus footer
+	totalH := a.layout.height - padV - 1 // minus footer
 	taHeight := v.noteInput.Height() + 2
 	diffH := totalH - taHeight
 
@@ -695,13 +695,13 @@ func (v *diffView) onContributorsReady(a *app, repo string) {
 }
 
 func (v *diffView) sizeMentionPicker(a *app) {
-	w := a.width / 2
+	w := a.layout.width / 2
 	if w < 30 {
 		w = 30
 	}
 	h := 12
-	if a.height < h+4 {
-		h = a.height - 4
+	if a.layout.height < h+4 {
+		h = a.layout.height - 4
 		if h < 5 {
 			h = 5
 		}
@@ -846,7 +846,7 @@ func (v *diffView) bindings(a *app) []Binding {
 			Name: "back", Keys: []string{"esc", "h", "left"},
 			Desc: "back to files", Group: "Navigate",
 			Action: func(a *app) tea.Cmd {
-				a.activeView = viewFiles
+				a.layout.focus(viewFiles)
 				a.files.rebuild(a)
 				a.prs.rebuild(a)
 				return nil
@@ -887,7 +887,7 @@ func (v *diffView) bindings(a *app) []Binding {
 			Desc: "back to files (when all marked)", Group: "Navigate",
 			Action: func(a *app) tea.Cmd {
 				if v.allMarked() {
-					a.activeView = viewFiles
+					a.layout.focus(viewFiles)
 					a.files.rebuild(a)
 					a.prs.rebuild(a)
 				}
@@ -1088,8 +1088,8 @@ func mentionPickerBindings() []Binding {
 
 func (v *diffView) restoreSize(a *app) {
 	h, padV := appStyle.GetFrameSize()
-	v.vp.Width = a.width - h
-	v.vp.Height = a.height - padV - 1
+	v.vp.Width = a.layout.width - h
+	v.vp.Height = a.layout.height - padV - 1
 }
 
 // publishNoteAtCursor posts the first unpublished note on the cursor's

@@ -51,7 +51,7 @@ func (v *prsView) bindings(a *app) []Binding {
 			Name: "back", Keys: []string{"esc", "h", "left"},
 			Desc: "back to todo", Group: "Navigate",
 			Action: func(a *app) tea.Cmd {
-				a.activeView = viewTodo
+				a.layout.focus(viewTodo)
 				return nil
 			},
 		},

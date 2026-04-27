@@ -25,7 +25,7 @@ const pollInterval = 500 * time.Millisecond
 // app is the top-level tea.Model. It owns data shared across views
 // (brain, cfg, the PR cache, currently-selected PR/file) plus each
 // sub-model's UI state in a named field. The active view is addressed
-// through a.activeView; every view method takes *app so transitions
+// through a.layout.activeView; every view method takes *app so transitions
 // and shared lookups have one home.
 //
 // This split is deliberately shaped for the eventual daemon move:
@@ -37,8 +37,8 @@ type app struct {
 	cfg   *Config
 	brain *brain.Brain
 
-	width, height int
-	activeView    view
+	// layout is terminal viewport state plus which view has focus.
+	layout layout
 
 	todo     todoView
 	prs      prsView
@@ -68,18 +68,18 @@ type app struct {
 
 func newApp(cfg *Config, b *brain.Brain) *app {
 	a := &app{
-		cfg:        cfg,
-		brain:      b,
-		activeView: viewTodo,
-		todo:       newTodoView(),
-		prs:        newPRsView(),
-		files:      newFilesView(),
-		diff:       newDiffView(),
-		comments:   newCommentsView(),
-		review:     newReviewModal(),
-		merge:      newMergeModal(),
-		cache:      newCache(),
-		session:    newSession(),
+		cfg:      cfg,
+		brain:    b,
+		layout:   layout{activeView: viewTodo},
+		todo:     newTodoView(),
+		prs:      newPRsView(),
+		files:    newFilesView(),
+		diff:     newDiffView(),
+		comments: newCommentsView(),
+		review:   newReviewModal(),
+		merge:    newMergeModal(),
+		cache:    newCache(),
+		session:  newSession(),
 	}
 
 	cached := b.CachedPRs()
@@ -108,7 +108,7 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 
 	case tea.WindowSizeMsg:
-		a.width, a.height = m.Width, m.Height
+		a.layout.setSize(m.Width, m.Height)
 		a.relayout()
 		return a, nil
 
@@ -169,7 +169,7 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a *app) View() string {
 	var body string
-	switch a.activeView {
+	switch a.layout.activeView {
 	case viewTodo:
 		body = a.todo.View(a)
 	case viewPRs:
@@ -184,13 +184,13 @@ func (a *app) View() string {
 	rendered := appStyle.Render(body) + "\n" + lipgloss.NewStyle().Faint(true).Render(a.footer())
 
 	if a.review.open {
-		rendered = centerOverlay(rendered, a.renderReviewModal(), a.width, a.height)
+		rendered = centerOverlay(rendered, a.renderReviewModal(), a.layout.width, a.layout.height)
 	}
 	if a.merge.open {
-		rendered = centerOverlay(rendered, a.renderMergeModal(), a.width, a.height)
+		rendered = centerOverlay(rendered, a.renderMergeModal(), a.layout.width, a.layout.height)
 	}
 	if a.help.open {
-		rendered = centerOverlay(rendered, a.help.Render(a), a.width, a.height)
+		rendered = centerOverlay(rendered, a.help.Render(a), a.layout.width, a.layout.height)
 	}
 	return rendered
 }
@@ -214,7 +214,7 @@ func centerOverlay(bg, fg string, width, height int) string {
 // --- routing ---
 
 func (a *app) routeKey(key tea.KeyMsg) tea.Cmd {
-	switch a.activeView {
+	switch a.layout.activeView {
 	case viewTodo:
 		return a.todo.Update(a, key)
 	case viewPRs:
@@ -230,7 +230,7 @@ func (a *app) routeKey(key tea.KeyMsg) tea.Cmd {
 }
 
 func (a *app) routeToActive(msg tea.Msg) tea.Cmd {
-	switch a.activeView {
+	switch a.layout.activeView {
 	case viewTodo:
 		return a.todo.Update(a, msg)
 	case viewPRs:
@@ -247,7 +247,7 @@ func (a *app) routeToActive(msg tea.Msg) tea.Cmd {
 
 func (a *app) relayout() {
 	h, padV := appStyle.GetFrameSize()
-	listW, listH := a.width-h, a.height-padV-1
+	listW, listH := a.layout.width-h, a.layout.height-padV-1
 	a.todo.Resize(listW, listH)
 	a.prs.Resize(listW, listH)
 	a.files.Resize(listW, listH)
@@ -261,10 +261,10 @@ func (a *app) relayout() {
 // already cached. Bumps pollGen so any in-flight tick from a previous PR
 // stops silently.
 func (a *app) openPR(pr gh.PR) tea.Cmd {
-	a.session.listOrigin = a.activeView
+	a.session.listOrigin = a.layout.activeView
 	a.session.selectedPR = &pr
 	a.session.review = a.brain.ActiveSession(pr.Repo, pr.Number)
-	a.activeView = viewFiles
+	a.layout.focus(viewFiles)
 	a.files.rebuildDescVP(a)
 	a.pollGen++
 	key := brain.PRKey(pr.Repo, pr.Number)
@@ -299,7 +299,7 @@ func (a *app) openComments(returnTo view) tea.Cmd {
 		return nil
 	}
 	a.comments.returnTo = returnTo
-	a.activeView = viewComments
+	a.layout.focus(viewComments)
 	a.comments.rebuild(a)
 	return nil
 }
@@ -378,7 +378,7 @@ func (a *app) footer() string {
 	if a.merge.open {
 		return "merge modal — tab: cycle method   ctrl+s: merge   esc: cancel"
 	}
-	switch a.activeView {
+	switch a.layout.activeView {
 	case viewTodo:
 		return a.todo.Footer(a)
 	case viewPRs:
@@ -462,7 +462,7 @@ func (a *app) onEditorDone(msg editorDoneMsg) tea.Cmd {
 	}
 	if a.session.selectedPR != nil {
 		pr := *a.session.selectedPR
-		if a.activeView == viewDiff && a.session.selectedFile != "" {
+		if a.layout.activeView == viewDiff && a.session.selectedFile != "" {
 			a.diff.marks = a.brain.HunkMarks(pr.Repo, pr.Number, a.session.selectedFile)
 			a.diff.notes = a.brain.NotesForFile(pr.Repo, pr.Number, a.session.selectedFile)
 			a.diff.redraw()
@@ -503,7 +503,7 @@ func (a *app) onInlineNotesReady(msg inlineNotesReadyMsg) tea.Cmd {
 	// Refresh list glyphs / diff overlay so new notes show up immediately.
 	a.files.rebuild(a)
 	a.prs.rebuild(a)
-	if a.activeView == viewDiff && a.session.selectedFile != "" {
+	if a.layout.activeView == viewDiff && a.session.selectedFile != "" {
 		a.diff.notes = a.brain.NotesForFile(msg.pr.Repo, msg.pr.Number, a.session.selectedFile)
 		a.diff.redraw()
 	}
@@ -522,7 +522,7 @@ func (a *app) onNotePublished(msg notePublishedMsg) tea.Cmd {
 		a.statusMsg = "publish saved on GitHub but local stamp failed: " + err.Error()
 		return nil
 	}
-	if a.activeView == viewDiff && a.session.selectedPR != nil && a.session.selectedFile != "" {
+	if a.layout.activeView == viewDiff && a.session.selectedPR != nil && a.session.selectedFile != "" {
 		a.diff.notes = a.brain.NotesForFile(a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedFile)
 		a.diff.redraw()
 	}
@@ -570,10 +570,10 @@ func (a *app) onCommentsLoaded(msg commentsLoadedMsg) tea.Cmd {
 		return nil
 	}
 	a.cache.prComments[brain.PRKey(msg.repo, msg.prNum)] = msg.comments
-	if a.activeView == viewComments {
+	if a.layout.activeView == viewComments {
 		a.comments.rebuild(a)
 	}
-	if a.activeView == viewDiff && a.session.selectedPR != nil &&
+	if a.layout.activeView == viewDiff && a.session.selectedPR != nil &&
 		a.session.selectedPR.Repo == msg.repo && a.session.selectedPR.Number == msg.prNum {
 		a.diff.refreshGHInline(a)
 	}
@@ -589,7 +589,7 @@ func (a *app) onContributorsLoaded(msg contributorsLoadedMsg) tea.Cmd {
 		return nil
 	}
 	a.cache.contributors[msg.repo] = msg.contributors
-	if a.activeView == viewDiff {
+	if a.layout.activeView == viewDiff {
 		a.diff.onContributorsReady(a, msg.repo)
 	}
 	return nil
@@ -607,7 +607,7 @@ func (a *app) onPollTick(msg pollTickMsg) tea.Cmd {
 	pr := *a.session.selectedPR
 	changed := false
 
-	if a.activeView == viewDiff && a.session.selectedFile != "" {
+	if a.layout.activeView == viewDiff && a.session.selectedFile != "" {
 		newMarks := a.brain.HunkMarks(pr.Repo, pr.Number, a.session.selectedFile)
 		if !reflect.DeepEqual(newMarks, a.diff.marks) {
 			a.diff.marks = newMarks

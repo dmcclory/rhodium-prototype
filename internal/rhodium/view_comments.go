@@ -63,7 +63,7 @@ func (v *commentsView) bindings(a *app) []Binding {
 			Name: "back", Keys: []string{"esc", "h", "left"},
 			Desc: "back", Group: "Navigate",
 			Action: func(a *app) tea.Cmd {
-				a.activeView = v.returnTo
+				a.layout.focus(v.returnTo)
 				return nil
 			},
 		},

@@ -50,7 +50,7 @@ func (v *todoView) bindings(a *app) []Binding {
 			Name: "all-prs", Keys: []string{"a"},
 			Desc: "all PRs", Group: "Navigate",
 			Action: func(a *app) tea.Cmd {
-				a.activeView = viewPRs
+				a.layout.focus(viewPRs)
 				return nil
 			},
 		},

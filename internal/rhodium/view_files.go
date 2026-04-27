@@ -97,9 +97,9 @@ func (v *filesView) bindings(a *app) []Binding {
 			Action: func(a *app) tea.Cmd {
 				v.tab = tabFiles
 				if a.session.listOrigin == viewTodo {
-					a.activeView = viewTodo
+					a.layout.focus(viewTodo)
 				} else {
-					a.activeView = viewPRs
+					a.layout.focus(viewPRs)
 				}
 				return nil
 			},

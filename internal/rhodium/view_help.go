@@ -88,7 +88,7 @@ var (
 // the background view is done by overlay() in app.View.
 func (h *helpOverlay) Render(a *app) string {
 	var bindings []Binding
-	switch a.activeView {
+	switch a.layout.activeView {
 	case viewTodo:
 		bindings = a.todo.bindings(a)
 	case viewPRs:
@@ -113,7 +113,7 @@ func renderHelpBody(a *app, bindings []Binding) string {
 		viewFiles:    "Files",
 		viewDiff:     "Diff",
 		viewComments: "Comments",
-	}[a.activeView]
+	}[a.layout.activeView]
 
 	var b strings.Builder
 	b.WriteString(helpTitleStyle.Render(fmt.Sprintf("Keys — %s view", viewLabel)))
