@@ -40,7 +40,7 @@ func (v *prsView) Update(a *app, msg tea.Msg) tea.Cmd {
 		return v.delegate(msg)
 	}
 	filtering := v.list.FilterState() == list.Filtering
-	if cmd, matched := dispatch(a, key.String(), filtering, v.bindings(a), globalBindings()); matched {
+	if cmd, matched := dispatch(key.String(), filtering, v.bindings(a), globalBindings(a)); matched {
 		return cmd
 	}
 	return v.delegate(msg)
@@ -51,14 +51,14 @@ func (v *prsView) bindings(a *app) []Binding {
 		{
 			Name: "back", Keys: []string{"esc", "h", "left"},
 			Desc: "back to todo", Group: "Navigate",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				return router.Navigate(router.RouteTodo)
 			},
 		},
 		{
 			Name: "open-pr", Keys: []string{"enter", "l", "right"},
 			Desc: "open selected PR", Group: "Navigate",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				if it, ok := v.list.SelectedItem().(prItem); ok {
 					return a.openPR(it.pr)
 				}
@@ -68,7 +68,7 @@ func (v *prsView) bindings(a *app) []Binding {
 		{
 			Name: "review", Keys: []string{"A"},
 			Desc: "open review modal (approve / request-changes / comment)", Group: "View",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				it, ok := v.list.SelectedItem().(prItem)
 				if !ok {
 					return nil
@@ -79,7 +79,7 @@ func (v *prsView) bindings(a *app) []Binding {
 		{
 			Name: "merge", Keys: []string{"M"},
 			Desc: "open merge modal (squash / merge / rebase)", Group: "View",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				it, ok := v.list.SelectedItem().(prItem)
 				if !ok {
 					return nil
@@ -90,7 +90,7 @@ func (v *prsView) bindings(a *app) []Binding {
 		{
 			Name: "comments", Keys: []string{"C"},
 			Desc: "view PR comments", Group: "View",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				it, ok := v.list.SelectedItem().(prItem)
 				if !ok {
 					return nil
@@ -105,7 +105,7 @@ func (v *prsView) bindings(a *app) []Binding {
 		{
 			Name: "scrutiny", Keys: []string{"s"},
 			Desc: "toggle scrutiny on selected PR", Group: "View",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				it, ok := v.list.SelectedItem().(prItem)
 				if !ok {
 					return nil

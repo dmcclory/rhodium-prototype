@@ -39,7 +39,7 @@ func (v *todoView) Update(a *app, msg tea.Msg) tea.Cmd {
 		return v.delegate(msg)
 	}
 	filtering := v.list.FilterState() == list.Filtering
-	if cmd, matched := dispatch(a, key.String(), filtering, v.bindings(a), globalBindings()); matched {
+	if cmd, matched := dispatch(key.String(), filtering, v.bindings(a), globalBindings(a)); matched {
 		return cmd
 	}
 	return v.delegate(msg)
@@ -50,14 +50,14 @@ func (v *todoView) bindings(a *app) []Binding {
 		{
 			Name: "all-prs", Keys: []string{"a"},
 			Desc: "all PRs", Group: "Navigate",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				return router.Navigate(router.RoutePRs)
 			},
 		},
 		{
 			Name: "open-pr", Keys: []string{"enter", "l", "right"},
 			Desc: "open selected PR", Group: "Navigate",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				if it, ok := v.list.SelectedItem().(todoItem); ok {
 					return a.openPR(it.pr)
 				}
@@ -67,7 +67,7 @@ func (v *todoView) bindings(a *app) []Binding {
 		{
 			Name: "review", Keys: []string{"A"},
 			Desc: "open review modal (approve / request-changes / comment)", Group: "View",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				it, ok := v.list.SelectedItem().(todoItem)
 				if !ok {
 					return nil
@@ -78,7 +78,7 @@ func (v *todoView) bindings(a *app) []Binding {
 		{
 			Name: "merge", Keys: []string{"M"},
 			Desc: "open merge modal (squash / merge / rebase)", Group: "View",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				it, ok := v.list.SelectedItem().(todoItem)
 				if !ok {
 					return nil
@@ -89,7 +89,7 @@ func (v *todoView) bindings(a *app) []Binding {
 		{
 			Name: "comments", Keys: []string{"C"},
 			Desc: "view PR comments", Group: "View",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				it, ok := v.list.SelectedItem().(todoItem)
 				if !ok {
 					return nil

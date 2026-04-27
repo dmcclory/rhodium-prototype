@@ -84,7 +84,7 @@ func (v *filesView) Update(a *app, msg tea.Msg) tea.Cmd {
 		return v.delegate(msg)
 	}
 	filtering := v.list.FilterState() == list.Filtering
-	if cmd, matched := dispatch(a, key.String(), filtering, v.bindings(a), globalBindings()); matched {
+	if cmd, matched := dispatch(key.String(), filtering, v.bindings(a), globalBindings(a)); matched {
 		return cmd
 	}
 	return v.delegate(msg)
@@ -95,7 +95,7 @@ func (v *filesView) bindings(a *app) []Binding {
 		{
 			Name: "back", Keys: []string{"esc", "h", "left"},
 			Desc: "back", Group: "Navigate",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				v.tab = tabFiles
 				if a.session.listOrigin == viewTodo {
 					return router.Navigate(router.RouteTodo)
@@ -106,7 +106,7 @@ func (v *filesView) bindings(a *app) []Binding {
 		{
 			Name: "open-file", Keys: []string{"enter", "l", "right"},
 			Desc: "open selected file", Group: "Navigate",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				if v.tab != tabFiles {
 					return nil
 				}
@@ -119,12 +119,12 @@ func (v *filesView) bindings(a *app) []Binding {
 		{
 			Name: "tab-files", Keys: []string{"1"},
 			Desc: "files tab", Group: "View",
-			Action: func(a *app) tea.Cmd { v.tab = tabFiles; return nil },
+			Action: func() tea.Cmd { v.tab = tabFiles; return nil },
 		},
 		{
 			Name: "tab-notes", Keys: []string{"2"},
 			Desc: "notes tab", Group: "View",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				v.tab = tabNotes
 				v.rebuildInfoVP(a)
 				return nil
@@ -133,14 +133,14 @@ func (v *filesView) bindings(a *app) []Binding {
 		{
 			Name: "comments", Keys: []string{"C"},
 			Desc: "view PR comments", Group: "View",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				if a.session.selectedPR == nil {
 					return nil
 				}
 				return a.openComments(router.RouteFiles)
 			},
 		},
-	}, agentBindings(a.cfg)...)
+	}, agentBindings(a)...)
 }
 
 func (v *filesView) delegate(msg tea.Msg) tea.Cmd {

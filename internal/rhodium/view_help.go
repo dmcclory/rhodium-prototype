@@ -100,7 +100,7 @@ func (h *helpOverlay) Render(a *app) string {
 	case viewComments:
 		bindings = a.comments.bindings(a)
 	}
-	bindings = append(bindings, globalBindings()...)
+	bindings = append(bindings, globalBindings(a)...)
 
 	body := renderHelpBody(a, bindings)
 	return helpBoxStyle.Render(body)

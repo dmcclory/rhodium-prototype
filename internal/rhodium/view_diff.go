@@ -818,7 +818,7 @@ func isMentionChar(r rune) bool {
 }
 
 func (v *diffView) updateKeys(a *app, msg tea.KeyMsg) tea.Cmd {
-	if cmd, matched := dispatch(a, msg.String(), false, v.bindings(a), globalBindings()); matched {
+	if cmd, matched := dispatch(msg.String(), false, v.bindings(a), globalBindings(a)); matched {
 		return cmd
 	}
 	var cmd tea.Cmd
@@ -846,7 +846,7 @@ func (v *diffView) bindings(a *app) []Binding {
 		{
 			Name: "back", Keys: []string{"esc", "h", "left"},
 			Desc: "back to files", Group: "Navigate",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				a.files.rebuild(a)
 				a.prs.rebuild(a)
 				return router.Navigate(router.RouteFiles)
@@ -855,7 +855,7 @@ func (v *diffView) bindings(a *app) []Binding {
 		{
 			Name: "next-hunk", Keys: []string{"n", "down", "tab"},
 			Desc: "next hunk", Group: "Navigate",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				v.stepHunk(1)
 				v.redraw()
 				v.jumpToHunk()
@@ -865,7 +865,7 @@ func (v *diffView) bindings(a *app) []Binding {
 		{
 			Name: "prev-hunk", Keys: []string{"p", "up", "shift+tab"},
 			Desc: "prev hunk", Group: "Navigate",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				v.stepHunk(-1)
 				v.redraw()
 				v.jumpToHunk()
@@ -875,17 +875,17 @@ func (v *diffView) bindings(a *app) []Binding {
 		{
 			Name: "cursor-down", Keys: []string{"j"},
 			Desc: "cursor down", Group: "Navigate",
-			Action: func(a *app) tea.Cmd { v.moveCursor(1); return nil },
+			Action: func() tea.Cmd { v.moveCursor(1); return nil },
 		},
 		{
 			Name: "cursor-up", Keys: []string{"k"},
 			Desc: "cursor up", Group: "Navigate",
-			Action: func(a *app) tea.Cmd { v.moveCursor(-1); return nil },
+			Action: func() tea.Cmd { v.moveCursor(-1); return nil },
 		},
 		{
 			Name: "advance", Keys: []string{"enter", "right"},
 			Desc: "back to files (when all marked)", Group: "Navigate",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				if v.allMarked() {
 					a.files.rebuild(a)
 					a.prs.rebuild(a)
@@ -897,7 +897,7 @@ func (v *diffView) bindings(a *app) []Binding {
 		{
 			Name: "toggle-mark", Keys: []string{" ", "x"},
 			Desc: "toggle hunk + advance", Group: "Mark",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				if v.hunkIdx < 0 || v.hunkIdx >= len(v.hunks) {
 					return nil
 				}
@@ -927,7 +927,7 @@ func (v *diffView) bindings(a *app) []Binding {
 		{
 			Name: "mark-all", Keys: []string{"m"},
 			Desc: "mark every hunk", Group: "Mark",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				if v.marks == nil {
 					v.marks = map[string]bool{}
 				}
@@ -946,7 +946,7 @@ func (v *diffView) bindings(a *app) []Binding {
 		{
 			Name: "unmark-all", Keys: []string{"u"},
 			Desc: "clear marks on file", Group: "Mark",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				v.marks = map[string]bool{}
 				v.saveMarks(a)
 				v.redraw()
@@ -959,14 +959,14 @@ func (v *diffView) bindings(a *app) []Binding {
 		{
 			Name: "publish-note", Keys: []string{"P"},
 			Desc: "publish note at cursor to GitHub", Group: "Notes",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				return v.publishNoteAtCursor(a)
 			},
 		},
 		{
 			Name: "note", Keys: []string{"c"},
 			Desc: "add note at cursor", Group: "Notes",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				// In segmented mode, notes key off new-file (F2) line numbers
 				// — segments rendered under any other view (b1→b2, f1→f2,
 				// etc.) don't have a clean F2 mapping, so block them. Most
@@ -991,7 +991,7 @@ func (v *diffView) bindings(a *app) []Binding {
 		{
 			Name: "cycle-view", Keys: []string{"v"},
 			Desc: "cycle segment view", Group: "View",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				if !v.segmented || len(v.segments) == 0 {
 					return nil
 				}
@@ -1013,7 +1013,7 @@ func (v *diffView) bindings(a *app) []Binding {
 		{
 			Name: "catch-up-toggle", Keys: []string{"d"},
 			Desc: "toggle catch-up / full diff", Group: "View",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				if v.catchUpOldHead == "" {
 					return nil
 				}
@@ -1050,7 +1050,7 @@ func (v *diffView) bindings(a *app) []Binding {
 		{
 			Name: "open-editor", Keys: []string{"o"},
 			Desc: "open file in editor", Group: "View",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				cmd, err := v.openInEditor(a)
 				if err != nil {
 					a.status.msg = "open: " + err.Error()
@@ -1059,7 +1059,7 @@ func (v *diffView) bindings(a *app) []Binding {
 				return cmd
 			},
 		},
-	}, agentBindings(a.cfg)...)
+	}, agentBindings(a)...)
 }
 
 // notingBindings are display-only entries shown in the help overlay while

@@ -49,7 +49,7 @@ func (v *commentsView) Footer(a *app) string {
 
 func (v *commentsView) Update(a *app, msg tea.Msg) tea.Cmd {
 	if key, ok := msg.(tea.KeyMsg); ok {
-		if cmd, matched := dispatch(a, key.String(), false, v.bindings(a), globalBindings()); matched {
+		if cmd, matched := dispatch(key.String(), false, v.bindings(a), globalBindings(a)); matched {
 			return cmd
 		}
 	}
@@ -63,7 +63,7 @@ func (v *commentsView) bindings(a *app) []Binding {
 		{
 			Name: "back", Keys: []string{"esc", "h", "left"},
 			Desc: "back", Group: "Navigate",
-			Action: func(a *app) tea.Cmd {
+			Action: func() tea.Cmd {
 				return router.Navigate(v.returnTo)
 			},
 		},
