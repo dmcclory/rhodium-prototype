@@ -196,7 +196,7 @@ func (v *diffView) open(a *app, fc gh.FileChange) tea.Cmd {
 		rebased := oldBase != newBase && oldBase != ""
 
 		if rebased {
-			a.statusMsg = fmt.Sprintf("classifying diamond (rebase %s→%s)", shortSHA(oldBase), shortSHA(newBase))
+			a.status.msg = fmt.Sprintf("classifying diamond (rebase %s→%s)", shortSHA(oldBase), shortSHA(newBase))
 			cmds = append(cmds, func() tea.Msg {
 				b1, _ := gh.FetchFileAtRef(repo, path, oldBase)
 				f1, _ := gh.FetchFileAtRef(repo, path, oldHead)
@@ -223,7 +223,7 @@ func (v *diffView) open(a *app, fc gh.FileChange) tea.Cmd {
 				return diamondClassifiedMsg{path: path, class: class, diamond: d, result: result, patch: patch}
 			})
 		} else {
-			a.statusMsg = fmt.Sprintf("loading catch-up diff %s..%s", shortSHA(oldHead), shortSHA(newHead))
+			a.status.msg = fmt.Sprintf("loading catch-up diff %s..%s", shortSHA(oldHead), shortSHA(newHead))
 			cmds = append(cmds, func() tea.Msg {
 				files, err := gh.FetchCompare(repo, oldHead, newHead)
 				return catchUpLoadedMsg{path: path, files: files, err: err}
@@ -250,7 +250,7 @@ func (v *diffView) open(a *app, fc gh.FileChange) tea.Cmd {
 
 func (v *diffView) onCatchUpLoaded(a *app, msg catchUpLoadedMsg) tea.Cmd {
 	if msg.err != nil {
-		a.statusMsg = "catch-up: " + msg.err.Error()
+		a.status.msg = "catch-up: " + msg.err.Error()
 		return nil
 	}
 	if a.layout.activeView != viewDiff || a.session.selectedFile != msg.path {
@@ -266,7 +266,7 @@ func (v *diffView) onCatchUpLoaded(a *app, msg catchUpLoadedMsg) tea.Cmd {
 	if deltaFC == nil || deltaFC.Patch == "" {
 		v.catchUpMode = false
 		v.catchUpClass = diff.ClassB1B2__F1F2
-		a.statusMsg = fmt.Sprintf("✓ %s: %s (auto-caught-up)", a.session.selectedFile, diff.ClassB1B2__F1F2)
+		a.status.msg = fmt.Sprintf("✓ %s: %s (auto-caught-up)", a.session.selectedFile, diff.ClassB1B2__F1F2)
 		a.brain.SetFileReviewed(a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedFile, a.session.selectedPR.HeadSHA, a.session.selectedPR.BaseSHA)
 		a.markSessionFileDone(a.session.selectedFile)
 		return nil
@@ -277,7 +277,7 @@ func (v *diffView) onCatchUpLoaded(a *app, msg catchUpLoadedMsg) tea.Cmd {
 	v.hunks = diff.ParseHunks(deltaFC.Patch)
 	v.marks = a.brain.HunkMarks(a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedFile)
 	v.hunkIdx = firstUnmarked(v.hunks, v.marks)
-	a.statusMsg = fmt.Sprintf("catch-up [%s]: f1→f2 since %s  (d: full diff)", diff.ClassB1B2, shortSHA(v.catchUpOldHead))
+	a.status.msg = fmt.Sprintf("catch-up [%s]: f1→f2 since %s  (d: full diff)", diff.ClassB1B2, shortSHA(v.catchUpOldHead))
 	v.redraw()
 	v.jumpToHunk()
 	return nil
@@ -285,7 +285,7 @@ func (v *diffView) onCatchUpLoaded(a *app, msg catchUpLoadedMsg) tea.Cmd {
 
 func (v *diffView) onDiamondClassified(a *app, msg diamondClassifiedMsg) tea.Cmd {
 	if msg.err != nil {
-		a.statusMsg = "classify: " + msg.err.Error()
+		a.status.msg = "classify: " + msg.err.Error()
 		return nil
 	}
 	if a.layout.activeView != viewDiff || a.session.selectedFile != msg.path {
@@ -300,7 +300,7 @@ func (v *diffView) onDiamondClassified(a *app, msg diamondClassifiedMsg) tea.Cmd
 		if msg.class.IsForget() {
 			label = "FORGET — base absorbed feature"
 		}
-		a.statusMsg = fmt.Sprintf("✓ %s: %s (auto-caught-up)", a.session.selectedFile, label)
+		a.status.msg = fmt.Sprintf("✓ %s: %s (auto-caught-up)", a.session.selectedFile, label)
 		a.brain.SetFileReviewed(a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedFile, a.session.selectedPR.HeadSHA, a.session.selectedPR.BaseSHA)
 		a.markSessionFileDone(a.session.selectedFile)
 		return nil
@@ -324,14 +324,14 @@ func (v *diffView) onDiamondClassified(a *app, msg diamondClassifiedMsg) tea.Cmd
 	v.hunkIdx = firstUnmarked(v.hunks, v.marks)
 
 	if v.segmented {
-		a.statusMsg = fmt.Sprintf("catch-up [%s]: %d segments  (d: full diff)", msg.class, len(v.segments))
+		a.status.msg = fmt.Sprintf("catch-up [%s]: %d segments  (d: full diff)", msg.class, len(v.segments))
 	} else {
 		views := msg.class.Views()
 		viewLabel := ""
 		if len(views) > 0 {
 			viewLabel = fmt.Sprintf("%s→%s", views[0].From, views[0].To)
 		}
-		a.statusMsg = fmt.Sprintf("catch-up [%s]: %s  (d: full diff)", msg.class, viewLabel)
+		a.status.msg = fmt.Sprintf("catch-up [%s]: %s  (d: full diff)", msg.class, viewLabel)
 	}
 	v.redraw()
 	v.jumpToHunk()
@@ -365,7 +365,7 @@ func (v *diffView) refreshGHInline(a *app) {
 
 func (v *diffView) onBlobLoaded(a *app, msg blobLoadedMsg) tea.Cmd {
 	if msg.err != nil {
-		a.statusMsg = "blob: " + msg.err.Error()
+		a.status.msg = "blob: " + msg.err.Error()
 		return nil
 	}
 	if a.layout.activeView == viewDiff {
@@ -557,7 +557,7 @@ func (v *diffView) saveMarks(a *app) {
 		return
 	}
 	if err := a.brain.SetHunkMarks(a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedFile, v.marks); err != nil {
-		a.statusMsg = "save error: " + err.Error()
+		a.status.msg = "save error: " + err.Error()
 		return
 	}
 	if a.session.selectedPR.HeadSHA != "" {
@@ -585,7 +585,7 @@ func (v *diffView) openInEditor(a *app) (tea.Cmd, error) {
 		}
 	}
 	prKeyStr := fmt.Sprintf("%s#%d", a.session.selectedPR.Repo, a.session.selectedPR.Number)
-	a.statusMsg = fmt.Sprintf("opening %s:%d in %s", a.session.selectedFile, line, worktree)
+	a.status.msg = fmt.Sprintf("opening %s:%d in %s", a.session.selectedFile, line, worktree)
 	return launchEditor(a.cfg, worktree, a.session.selectedFile, prKeyStr, line), nil
 }
 
@@ -609,7 +609,7 @@ func (v *diffView) updateNotingKeys(a *app, msg tea.KeyMsg) tea.Cmd {
 		v.restoreSize(a)
 		if body != "" {
 			if err := a.brain.SaveNote(a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedFile, v.noteLineNo, v.noteLineHash, body); err != nil {
-				a.statusMsg = "save note: " + err.Error()
+				a.status.msg = "save note: " + err.Error()
 			} else {
 				v.notes = a.brain.NotesForFile(a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedFile)
 				v.redraw()
@@ -952,7 +952,7 @@ func (v *diffView) bindings(a *app) []Binding {
 				v.redraw()
 				v.hunkIdx = 0
 				v.jumpToHunk()
-				a.statusMsg = "cleared marks on " + a.session.selectedFile
+				a.status.msg = "cleared marks on " + a.session.selectedFile
 				return nil
 			},
 		},
@@ -973,12 +973,12 @@ func (v *diffView) bindings(a *app) []Binding {
 				// primary views do end at F2; this is only a limitation for
 				// a handful of classes.
 				if view, ok := v.currentSegmentView(); ok && view.To != diff.F2 {
-					a.statusMsg = fmt.Sprintf("notes are only supported on F2 views (this segment: %s→%s)", view.From, view.To)
+					a.status.msg = fmt.Sprintf("notes are only supported on F2 views (this segment: %s→%s)", view.From, view.To)
 					return nil
 				}
 				lineNo := v.cursorFileLine()
 				if lineNo == 0 {
-					a.statusMsg = "cursor not on a file line"
+					a.status.msg = "cursor not on a file line"
 					return nil
 				}
 				v.noting = true
@@ -996,7 +996,7 @@ func (v *diffView) bindings(a *app) []Binding {
 					return nil
 				}
 				if diff.MaxSegmentViews(v.segments) <= 1 {
-					a.statusMsg = "no alternate views for these segments"
+					a.status.msg = "no alternate views for these segments"
 					return nil
 				}
 				v.segmentViewIdx++
@@ -1004,7 +1004,7 @@ func (v *diffView) bindings(a *app) []Binding {
 				v.hunkIdx = firstUnmarked(v.hunks, v.marks)
 				v.cursorLine = 0
 				maxV := diff.MaxSegmentViews(v.segments)
-				a.statusMsg = fmt.Sprintf("view %d/%d", (v.segmentViewIdx%maxV)+1, maxV)
+				a.status.msg = fmt.Sprintf("view %d/%d", (v.segmentViewIdx%maxV)+1, maxV)
 				v.redraw()
 				v.jumpToHunk()
 				return nil
@@ -1027,17 +1027,17 @@ func (v *diffView) bindings(a *app) []Binding {
 					v.hunks = diff.ParseHunks(fc.Patch)
 					v.marks = a.brain.HunkMarks(a.session.selectedPR.Repo, a.session.selectedPR.Number, fc.Path)
 					v.hunkIdx = firstUnmarked(v.hunks, v.marks)
-					a.statusMsg = "full diff  (d: catch-up diff)"
+					a.status.msg = "full diff  (d: catch-up diff)"
 				} else {
 					v.catchUpMode = true
 					if len(v.segments) > 0 {
 						v.hunks = diff.SegmentHunks(v.segments, v.segmentViewIdx)
 						v.segmented = true
-						a.statusMsg = fmt.Sprintf("catch-up [%s]: %d segments since %s  (d: full diff)", v.catchUpClass, len(v.segments), shortSHA(v.catchUpOldHead))
+						a.status.msg = fmt.Sprintf("catch-up [%s]: %d segments since %s  (d: full diff)", v.catchUpClass, len(v.segments), shortSHA(v.catchUpOldHead))
 					} else {
 						v.hunks = diff.ParseHunks(v.catchUpPatch)
 						v.segmented = false
-						a.statusMsg = fmt.Sprintf("catch-up [%s]: changes since %s  (d: full diff)", v.catchUpClass, shortSHA(v.catchUpOldHead))
+						a.status.msg = fmt.Sprintf("catch-up [%s]: changes since %s  (d: full diff)", v.catchUpClass, shortSHA(v.catchUpOldHead))
 					}
 					v.marks = a.brain.HunkMarks(a.session.selectedPR.Repo, a.session.selectedPR.Number, fc.Path)
 					v.hunkIdx = firstUnmarked(v.hunks, v.marks)
@@ -1053,7 +1053,7 @@ func (v *diffView) bindings(a *app) []Binding {
 			Action: func(a *app) tea.Cmd {
 				cmd, err := v.openInEditor(a)
 				if err != nil {
-					a.statusMsg = "open: " + err.Error()
+					a.status.msg = "open: " + err.Error()
 					return nil
 				}
 				return cmd
@@ -1107,7 +1107,7 @@ func (v *diffView) publishNoteAtCursor(a *app) tea.Cmd {
 	}
 	lineNo := v.cursorFileLine()
 	if lineNo == 0 {
-		a.statusMsg = "cursor not on a file line"
+		a.status.msg = "cursor not on a file line"
 		return nil
 	}
 	var target *brain.Note
@@ -1119,7 +1119,7 @@ func (v *diffView) publishNoteAtCursor(a *app) tea.Cmd {
 		}
 	}
 	if target == nil {
-		a.statusMsg = fmt.Sprintf("no unpublished note on line %d", lineNo)
+		a.status.msg = fmt.Sprintf("no unpublished note on line %d", lineNo)
 		return nil
 	}
 	pr := *a.session.selectedPR
@@ -1127,7 +1127,7 @@ func (v *diffView) publishNoteAtCursor(a *app) tea.Cmd {
 	noteID := target.ID
 	body := target.Body
 	commit := pr.HeadSHA
-	a.statusMsg = fmt.Sprintf("publishing note on %s:%d…", path, lineNo)
+	a.status.msg = fmt.Sprintf("publishing note on %s:%d…", path, lineNo)
 	return func() tea.Msg {
 		ghID, err := gh.PostInlineComment(pr.Repo, pr.Number, gh.InlineComment{
 			Body:     body,

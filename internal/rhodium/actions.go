@@ -84,14 +84,14 @@ func runInteractiveAction(a *app, action Action, agent Agent, worktree string, p
 		if worktree != "" {
 			cmd.Dir = worktree
 		}
-		a.statusMsg = fmt.Sprintf("launching %s (%s)…", agent.Name, action.Name)
+		a.status.msg = fmt.Sprintf("launching %s (%s)…", agent.Name, action.Name)
 		return tea.ExecProcess(cmd, func(err error) tea.Msg {
 			return actionDoneMsg{action: action.Name, err: err}
 		}), nil
 	}
 
 	label := fmt.Sprintf("%s: %s", action.Name, brain.PRKey(pr.Repo, pr.Number))
-	a.statusMsg = fmt.Sprintf("launching %s (%s) in tmux pane", agent.Name, action.Name)
+	a.status.msg = fmt.Sprintf("launching %s (%s) in tmux pane", agent.Name, action.Name)
 	return func() tea.Msg {
 		paneID, err := spawnTmuxPane(a.cfg.TmuxMode(), worktree, label)
 		if err != nil {
@@ -109,7 +109,7 @@ func runInteractiveAction(a *app, action Action, agent Agent, worktree string, p
 // to the brain under source="agent". Stays inside the TUI — no tmux, no
 // worktree required.
 func runInlineNotesAction(a *app, action Action, agent Agent, pr gh.PR, prompt string) tea.Cmd {
-	a.statusMsg = fmt.Sprintf("running %s (%s)…", agent.Name, action.Name)
+	a.status.msg = fmt.Sprintf("running %s (%s)…", agent.Name, action.Name)
 	return func() tea.Msg {
 		cmd := exec.Command(agent.Command, agent.OneshotArgs...)
 		cmd.Stdin = strings.NewReader(prompt)

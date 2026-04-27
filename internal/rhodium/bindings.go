@@ -94,7 +94,7 @@ func agentBindings(cfg *Config) []Binding {
 			Action: func(a *app) tea.Cmd {
 				cmd, err := runAction(a, act)
 				if err != nil {
-					a.statusMsg = fmt.Sprintf("%s: %s", act.Name, err.Error())
+					a.status.msg = fmt.Sprintf("%s: %s", act.Name, err.Error())
 					return nil
 				}
 				return cmd

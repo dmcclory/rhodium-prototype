@@ -58,12 +58,8 @@ type app struct {
 	// review session, where to return when the user backs out.
 	session session
 
-	statusMsg string
-
-	// pollGen increments every time a PR is opened; the polling tick
-	// carries the generation it was scheduled under, so older loops stop
-	// naturally when a newer PR is selected.
-	pollGen int
+	// status carries the footer message and the polling generation.
+	status status
 }
 
 func newApp(cfg *Config, b *brain.Brain) *app {
@@ -266,9 +262,9 @@ func (a *app) openPR(pr gh.PR) tea.Cmd {
 	a.session.review = a.brain.ActiveSession(pr.Repo, pr.Number)
 	a.layout.focus(viewFiles)
 	a.files.rebuildDescVP(a)
-	a.pollGen++
+	gen := a.status.bumpPoll()
 	key := brain.PRKey(pr.Repo, pr.Number)
-	cmds := []tea.Cmd{pollTickCmd(a.pollGen)}
+	cmds := []tea.Cmd{pollTickCmd(gen)}
 	if _, cached := a.cache.prComments[key]; !cached {
 		cmds = append(cmds, loadCommentsCmd(pr))
 	}
@@ -369,8 +365,8 @@ func (a *app) markSessionFileDone(path string) {
 // --- footer composition ---
 
 func (a *app) footer() string {
-	if a.statusMsg != "" {
-		return a.statusMsg
+	if a.status.msg != "" {
+		return a.status.msg
 	}
 	if a.review.open {
 		return "review modal — tab: cycle event   ctrl+s: submit   esc: cancel"
@@ -397,7 +393,7 @@ func (a *app) footer() string {
 
 func (a *app) onPRsLoaded(msg prsLoadedMsg) tea.Cmd {
 	if msg.err != nil {
-		a.statusMsg = "error: " + msg.err.Error()
+		a.status.msg = "error: " + msg.err.Error()
 		return nil
 	}
 	for _, p := range msg.prs {
@@ -413,7 +409,7 @@ func (a *app) onPRsLoaded(msg prsLoadedMsg) tea.Cmd {
 func (a *app) onFilesLoaded(msg filesLoadedMsg) tea.Cmd {
 	a.files.loadingFiles = false
 	if msg.err != nil {
-		a.statusMsg = "error: " + msg.err.Error()
+		a.status.msg = "error: " + msg.err.Error()
 		return nil
 	}
 	key := brain.PRKey(msg.pr.Repo, msg.pr.Number)
@@ -436,7 +432,7 @@ func (a *app) onAutoAdvance(msg autoAdvanceMsg) tea.Cmd {
 			a.files.rebuild(a)
 			a.session.review = a.brain.ActiveSession(a.session.selectedPR.Repo, a.session.selectedPR.Number)
 		}
-		a.statusMsg = fmt.Sprintf("✓ auto-caught-up %d files", len(msg.advancedFiles))
+		a.status.msg = fmt.Sprintf("✓ auto-caught-up %d files", len(msg.advancedFiles))
 	}
 	return nil
 }
@@ -457,7 +453,7 @@ func (a *app) onPrefetchDone() tea.Cmd {
 // the current PR's marks/notes so any changes made in nvim show up.
 func (a *app) onEditorDone(msg editorDoneMsg) tea.Cmd {
 	if msg.err != nil {
-		a.statusMsg = "editor: " + msg.err.Error()
+		a.status.msg = "editor: " + msg.err.Error()
 		return nil
 	}
 	if a.session.selectedPR != nil {
@@ -478,10 +474,10 @@ func (a *app) onEditorDone(msg editorDoneMsg) tea.Cmd {
 // fallback inline path it fires when the agent process exits.
 func (a *app) onActionDone(msg actionDoneMsg) tea.Cmd {
 	if msg.err != nil {
-		a.statusMsg = fmt.Sprintf("%s: %s", msg.action, msg.err.Error())
+		a.status.msg = fmt.Sprintf("%s: %s", msg.action, msg.err.Error())
 		return nil
 	}
-	a.statusMsg = fmt.Sprintf("%s: launched", msg.action)
+	a.status.msg = fmt.Sprintf("%s: launched", msg.action)
 	return nil
 }
 
@@ -494,12 +490,12 @@ func (a *app) onInlineNotesReady(msg inlineNotesReadyMsg) tea.Cmd {
 			continue
 		}
 		if err := a.brain.SaveAgentNote(msg.pr.Repo, msg.pr.Number, n.Path, n.Line, n.Body); err != nil {
-			a.statusMsg = fmt.Sprintf("%s: save note: %s", msg.action, err.Error())
+			a.status.msg = fmt.Sprintf("%s: save note: %s", msg.action, err.Error())
 			return nil
 		}
 		saved++
 	}
-	a.statusMsg = fmt.Sprintf("%s: %d notes added", msg.action, saved)
+	a.status.msg = fmt.Sprintf("%s: %d notes added", msg.action, saved)
 	// Refresh list glyphs / diff overlay so new notes show up immediately.
 	a.files.rebuild(a)
 	a.prs.rebuild(a)
@@ -515,18 +511,18 @@ func (a *app) onInlineNotesReady(msg inlineNotesReadyMsg) tea.Cmd {
 // won't re-publish it, and refresh the diff so the "→GH" marker shows up.
 func (a *app) onNotePublished(msg notePublishedMsg) tea.Cmd {
 	if msg.err != nil {
-		a.statusMsg = "publish: " + msg.err.Error()
+		a.status.msg = "publish: " + msg.err.Error()
 		return nil
 	}
 	if err := a.brain.SetNoteGitHubCommentID(msg.noteID, msg.ghID); err != nil {
-		a.statusMsg = "publish saved on GitHub but local stamp failed: " + err.Error()
+		a.status.msg = "publish saved on GitHub but local stamp failed: " + err.Error()
 		return nil
 	}
 	if a.layout.activeView == viewDiff && a.session.selectedPR != nil && a.session.selectedFile != "" {
 		a.diff.notes = a.brain.NotesForFile(a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedFile)
 		a.diff.redraw()
 	}
-	a.statusMsg = fmt.Sprintf("published note → GitHub #%d", msg.ghID)
+	a.status.msg = fmt.Sprintf("published note → GitHub #%d", msg.ghID)
 	return nil
 }
 
@@ -535,10 +531,10 @@ func (a *app) onNotePublished(msg notePublishedMsg) tea.Cmd {
 // today — but the status line confirms what shipped.
 func (a *app) onReviewSubmitted(msg reviewSubmittedMsg) tea.Cmd {
 	if msg.err != nil {
-		a.statusMsg = "review: " + msg.err.Error()
+		a.status.msg = "review: " + msg.err.Error()
 		return nil
 	}
-	a.statusMsg = fmt.Sprintf("review submitted: %s on %s#%d", msg.event, msg.repo, msg.prNum)
+	a.status.msg = fmt.Sprintf("review submitted: %s on %s#%d", msg.event, msg.repo, msg.prNum)
 	return nil
 }
 
@@ -548,10 +544,10 @@ func (a *app) onReviewSubmitted(msg reviewSubmittedMsg) tea.Cmd {
 // not instant enough for the "M ctrl+s" feedback loop.
 func (a *app) onMergeSubmitted(msg mergeSubmittedMsg) tea.Cmd {
 	if msg.err != nil {
-		a.statusMsg = "merge: " + msg.err.Error()
+		a.status.msg = "merge: " + msg.err.Error()
 		return nil
 	}
-	a.statusMsg = fmt.Sprintf("merged: %s on %s#%d", msg.method, msg.repo, msg.prNum)
+	a.status.msg = fmt.Sprintf("merged: %s on %s#%d", msg.method, msg.repo, msg.prNum)
 	key := brain.PRKey(msg.repo, msg.prNum)
 	a.cache.dropPR(key)
 	delete(a.session.pinnedAttention, key)
@@ -566,7 +562,7 @@ func (a *app) onMergeSubmitted(msg mergeSubmittedMsg) tea.Cmd {
 // them — no per-view re-fetch.
 func (a *app) onCommentsLoaded(msg commentsLoadedMsg) tea.Cmd {
 	if msg.err != nil {
-		a.statusMsg = "comments: " + msg.err.Error()
+		a.status.msg = "comments: " + msg.err.Error()
 		return nil
 	}
 	a.cache.prComments[brain.PRKey(msg.repo, msg.prNum)] = msg.comments
@@ -585,7 +581,7 @@ func (a *app) onCommentsLoaded(msg commentsLoadedMsg) tea.Cmd {
 // further attempts — the next ctrl+a will re-fetch.
 func (a *app) onContributorsLoaded(msg contributorsLoadedMsg) tea.Cmd {
 	if msg.err != nil {
-		a.statusMsg = "contributors: " + msg.err.Error()
+		a.status.msg = "contributors: " + msg.err.Error()
 		return nil
 	}
 	a.cache.contributors[msg.repo] = msg.contributors
@@ -601,7 +597,7 @@ func (a *app) onContributorsLoaded(msg contributorsLoadedMsg) tea.Cmd {
 // Reschedules itself as long as a PR is selected and the tick belongs
 // to the current pollGen.
 func (a *app) onPollTick(msg pollTickMsg) tea.Cmd {
-	if msg.gen != a.pollGen || a.session.selectedPR == nil {
+	if msg.gen != a.status.pollGen || a.session.selectedPR == nil {
 		return nil
 	}
 	pr := *a.session.selectedPR
@@ -629,7 +625,7 @@ func (a *app) onPollTick(msg pollTickMsg) tea.Cmd {
 	a.files.rebuild(a)
 	a.prs.rebuild(a)
 
-	return pollTickCmd(a.pollGen)
+	return pollTickCmd(a.status.pollGen)
 }
 
 func pollTickCmd(gen int) tea.Cmd {

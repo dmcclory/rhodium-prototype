@@ -107,12 +107,6 @@ type status struct {
 	pollGen int
 }
 
-// set replaces the status line message.
-func (s *status) set(msg string) { s.msg = msg }
-
-// clear empties the status line.
-func (s *status) clear() { s.msg = "" }
-
 // bumpPoll increments and returns the new generation. The polling tick
 // carries the generation it was scheduled under, so older loops stop
 // naturally when a newer PR is selected.

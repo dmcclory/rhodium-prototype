@@ -114,9 +114,9 @@ func (v *prsView) bindings(a *app) []Binding {
 				a.brain.SetScrutiny(it.pr.Repo, it.pr.Number, on)
 				v.rebuild(a)
 				if on {
-					a.statusMsg = fmt.Sprintf("scrutiny ON for %s#%d — full diffs, no catch-up shortcuts", it.pr.Repo, it.pr.Number)
+					a.status.msg = fmt.Sprintf("scrutiny ON for %s#%d — full diffs, no catch-up shortcuts", it.pr.Repo, it.pr.Number)
 				} else {
-					a.statusMsg = fmt.Sprintf("scrutiny OFF for %s#%d", it.pr.Repo, it.pr.Number)
+					a.status.msg = fmt.Sprintf("scrutiny OFF for %s#%d", it.pr.Repo, it.pr.Number)
 				}
 				return nil
 			},

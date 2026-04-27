@@ -97,18 +97,18 @@ func (a *app) updateReviewKeys(msg tea.KeyMsg) tea.Cmd {
 // guard that locally rather than letting the round-trip error back.
 func (a *app) submitReviewFromModal() tea.Cmd {
 	if a.review.pr == nil {
-		a.statusMsg = "review: no PR captured"
+		a.status.msg = "review: no PR captured"
 		return nil
 	}
 	body := strings.TrimSpace(a.review.body.Value())
 	if body == "" && a.review.event != gh.ReviewApprove {
-		a.statusMsg = fmt.Sprintf("review: %s requires a body", a.review.event)
+		a.status.msg = fmt.Sprintf("review: %s requires a body", a.review.event)
 		return nil
 	}
 	pr := *a.review.pr
 	event := a.review.event
 	a.review.inflight = true
-	a.statusMsg = fmt.Sprintf("submitting %s on %s#%d…", event, pr.Repo, pr.Number)
+	a.status.msg = fmt.Sprintf("submitting %s on %s#%d…", event, pr.Repo, pr.Number)
 	// Close the modal immediately — the async result lands on the status line.
 	a.review.open = false
 	a.review.body.Blur()

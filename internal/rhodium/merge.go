@@ -84,13 +84,13 @@ func (a *app) updateMergeKeys(msg tea.KeyMsg) tea.Cmd {
 
 func (a *app) submitMergeFromModal() tea.Cmd {
 	if a.merge.pr == nil {
-		a.statusMsg = "merge: no PR captured"
+		a.status.msg = "merge: no PR captured"
 		return nil
 	}
 	pr := *a.merge.pr
 	method := a.merge.method
 	message := a.merge.body.Value()
-	a.statusMsg = fmt.Sprintf("merging %s on %s#%d…", method, pr.Repo, pr.Number)
+	a.status.msg = fmt.Sprintf("merging %s on %s#%d…", method, pr.Repo, pr.Number)
 	a.merge.open = false
 	a.merge.body.Blur()
 	return func() tea.Msg {
