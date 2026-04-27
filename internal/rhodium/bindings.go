@@ -22,7 +22,7 @@ func globalBindings(a *app) []keys.Binding {
 			Name: "help", Keys: []string{"?"}, Desc: "help", Group: "Global",
 			Unfiltered: true,
 			Action: func() tea.Cmd {
-				a.help.open = true
+				a.help.Open = true
 				return nil
 			},
 		},

@@ -5,7 +5,11 @@ import (
 	"reflect"
 	"rhodium/internal/brain"
 	"rhodium/internal/gh"
+	"rhodium/internal/tui/comments"
+	"rhodium/internal/tui/help"
+	"rhodium/internal/tui/keys"
 	"rhodium/internal/tui/router"
+	"rhodium/internal/tui/todo"
 	"rhodium/internal/tui/styles"
 	"time"
 
@@ -42,12 +46,12 @@ type app struct {
 	// layout is terminal viewport state plus which view has focus.
 	layout layout
 
-	todo     todoView
+	todo     todo.Model
 	prs      prsView
 	files    filesView
 	diff     diffView
-	comments commentsView
-	help     helpOverlay
+	comments comments.Model
+	help     help.Model
 
 	// review modal lives at app level so any list view can open it.
 	review reviewModal
@@ -69,11 +73,12 @@ func newApp(cfg *Config, b *brain.Brain) *app {
 		cfg:      cfg,
 		brain:    b,
 		layout:   layout{activeView: viewTodo},
-		todo:     newTodoView(),
+		todo:     todo.New(),
 		prs:      newPRsView(),
 		files:    newFilesView(),
 		diff:     newDiffView(),
-		comments: newCommentsView(),
+		comments: comments.New(),
+		help:     help.New(),
 		review:   newReviewModal(),
 		merge:    newMergeModal(),
 		cache:    newCache(),
@@ -147,11 +152,20 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.onNavigated(m)
 		return a, nil
 
+	case todo.OpenPRMsg:
+		return a, a.openPR(m.PR)
+	case todo.ReviewMsg:
+		return a, a.openReview(m.PR)
+	case todo.MergeMsg:
+		return a, a.openMerge(m.PR)
+	case todo.CommentsMsg:
+		return a, a.openCommentsForPR(m.PR, router.RouteTodo)
+
 	case tea.KeyMsg:
-		if a.help.open {
+		if a.help.Open {
 			switch m.String() {
 			case "?", "esc", "q", "ctrl+c":
-				a.help.open = false
+				a.help.Open = false
 			}
 			return a, nil
 		}
@@ -173,7 +187,7 @@ func (a *app) View() string {
 	var body string
 	switch a.layout.activeView {
 	case viewTodo:
-		body = a.todo.View(a)
+		body = a.todo.View()
 	case viewPRs:
 		body = a.prs.View(a)
 	case viewFiles:
@@ -181,7 +195,7 @@ func (a *app) View() string {
 	case viewDiff:
 		body = a.diff.View(a)
 	case viewComments:
-		body = a.comments.View(a)
+		body = a.comments.View()
 	}
 	rendered := styles.App.Render(body) + "\n" + lipgloss.NewStyle().Faint(true).Render(a.footer())
 
@@ -191,10 +205,38 @@ func (a *app) View() string {
 	if a.merge.open {
 		rendered = centerOverlay(rendered, a.renderMergeModal(), a.layout.width, a.layout.height)
 	}
-	if a.help.open {
-		rendered = centerOverlay(rendered, a.help.Render(a), a.layout.width, a.layout.height)
+	if a.help.Open {
+		rendered = centerOverlay(rendered, a.renderHelp(), a.layout.width, a.layout.height)
 	}
 	return rendered
+}
+
+// renderHelp composes the active view's bindings + always-on globals and
+// the view's display label, then hands them to the help package. The view
+// enum stays here (not in internal/tui/help) so the package boundary is
+// unaware of which views exist.
+func (a *app) renderHelp() string {
+	var bindings []keys.Binding
+	var label string
+	switch a.layout.activeView {
+	case viewTodo:
+		bindings = a.todo.Bindings()
+		label = "Todo"
+	case viewPRs:
+		bindings = a.prs.bindings(a)
+		label = "All PRs"
+	case viewFiles:
+		bindings = a.files.bindings(a)
+		label = "Files"
+	case viewDiff:
+		bindings = a.diff.bindings(a)
+		label = "Diff"
+	case viewComments:
+		bindings = a.comments.Bindings()
+		label = "Comments"
+	}
+	bindings = append(bindings, globalBindings(a)...)
+	return a.help.Render(label, bindings)
 }
 
 // centerOverlay paints fg centered over bg, clamped to width/height. Used
@@ -218,7 +260,7 @@ func centerOverlay(bg, fg string, width, height int) string {
 func (a *app) routeKey(key tea.KeyMsg) tea.Cmd {
 	switch a.layout.activeView {
 	case viewTodo:
-		return a.todo.Update(a, key)
+		return a.todo.Update(key, globalBindings(a))
 	case viewPRs:
 		return a.prs.Update(a, key)
 	case viewFiles:
@@ -226,7 +268,7 @@ func (a *app) routeKey(key tea.KeyMsg) tea.Cmd {
 	case viewDiff:
 		return a.diff.Update(a, key)
 	case viewComments:
-		return a.comments.Update(a, key)
+		return a.comments.Update(key, globalBindings(a))
 	}
 	return nil
 }
@@ -234,7 +276,7 @@ func (a *app) routeKey(key tea.KeyMsg) tea.Cmd {
 func (a *app) routeToActive(msg tea.Msg) tea.Cmd {
 	switch a.layout.activeView {
 	case viewTodo:
-		return a.todo.Update(a, msg)
+		return a.todo.Update(msg, globalBindings(a))
 	case viewPRs:
 		return a.prs.Update(a, msg)
 	case viewFiles:
@@ -242,7 +284,7 @@ func (a *app) routeToActive(msg tea.Msg) tea.Cmd {
 	case viewDiff:
 		return a.diff.Update(a, msg)
 	case viewComments:
-		return a.comments.Update(a, msg)
+		return a.comments.Update(msg, globalBindings(a))
 	}
 	return nil
 }
@@ -300,10 +342,104 @@ func (a *app) openComments(returnTo router.Route) tea.Cmd {
 	if a.session.selectedPR == nil {
 		return nil
 	}
-	a.comments.returnTo = returnTo
+	a.comments.ReturnTo = returnTo
 	a.layout.focus(viewComments)
-	a.comments.rebuild(a)
+	a.rebuildComments()
 	return nil
+}
+
+// rebuildComments hands the comments view the data it needs to render: the
+// current PR (or nil) and the cached comment slice (loaded=false means the
+// fetch is still in flight).
+func (a *app) rebuildComments() {
+	pr := a.session.selectedPR
+	var c []gh.Comment
+	loaded := false
+	if pr != nil {
+		c, loaded = a.cache.prComments[brain.PRKey(pr.Repo, pr.Number)]
+	}
+	a.comments.Rebuild(pr, c, loaded)
+}
+
+// openCommentsForPR is the shared "C from a list" path: stamp selectedPR,
+// kick off a comments fetch if we don't have them yet, and route into the
+// comments view. Used by todo.CommentsMsg today; prs/files inline today.
+func (a *app) openCommentsForPR(pr gh.PR, returnTo router.Route) tea.Cmd {
+	a.session.selectedPR = &pr
+	if _, cached := a.cache.prComments[brain.PRKey(pr.Repo, pr.Number)]; !cached {
+		return tea.Batch(loadCommentsCmd(pr), a.openComments(returnTo))
+	}
+	return a.openComments(returnTo)
+}
+
+// rebuildTodo walks a.cache.allPRs and emits a todo.Item for each PR with
+// outstanding work. Splits into "needs attention" (in-progress, catch-up,
+// notes) and "new" (never-touched) buckets, with attention pinning so the
+// list doesn't reshuffle as the user marks things reviewed.
+func (a *app) rebuildTodo() {
+	var actionable, newPRs []todo.Item
+	for _, pr := range a.cache.allPRs {
+		key := brain.PRKey(pr.Repo, pr.Number)
+		ti := a.buildTodoItem(pr)
+
+		// Pin PRs to "needs attention" once they first appear there —
+		// prevents the list from shifting under the user.
+		isActionableNow := ti != nil && !(len(ti.Tags) == 1 && ti.Tags[0] == "unseen")
+		if isActionableNow {
+			a.session.pinAttention(key)
+		}
+
+		if a.session.isPinnedAttention(key) {
+			if ti == nil {
+				ti = &todo.Item{PR: pr, Tags: []string{"done"}}
+			}
+			actionable = append(actionable, *ti)
+			continue
+		}
+		if ti == nil {
+			continue
+		}
+		newPRs = append(newPRs, *ti)
+	}
+	a.todo.Rebuild(actionable, newPRs, a.outstandingPRCount())
+}
+
+// buildTodoItem returns a todo.Item for pr if it needs attention, or nil
+// otherwise. Centralizes the brain queries so the todo package can stay
+// dumb about brain state.
+func (a *app) buildTodoItem(pr gh.PR) *todo.Item {
+	if !a.prHasOutstandingWork(pr) {
+		return nil
+	}
+	notes := a.brain.NoteCountForPR(pr.Repo, pr.Number)
+	cu := a.brain.ActiveSession(pr.Repo, pr.Number)
+	touched := a.brain.HasAnyMarks(pr.Repo, pr.Number) ||
+		len(a.brain.AllFileReviewedStates(pr.Repo, pr.Number)) > 0
+
+	files, filesLoaded := a.cache.prFiles[brain.PRKey(pr.Repo, pr.Number)]
+	var remaining int
+	if filesLoaded {
+		remaining = a.brain.UnseenCount(pr.Repo, pr.Number, files)
+	}
+
+	it := todo.Item{PR: pr, Notes: notes, Remaining: remaining}
+	if touched && cu == nil {
+		if !filesLoaded || remaining > 0 {
+			it.Tags = append(it.Tags, "in-progress")
+		}
+	}
+	if cu != nil {
+		it.Tags = append(it.Tags, "catch-up")
+		it.Done = cu.FilesDone
+		it.Total = cu.FilesTotal
+	}
+	if !touched && cu == nil {
+		it.Tags = append(it.Tags, "unseen")
+	}
+	if notes > 0 {
+		it.Tags = append(it.Tags, "notes")
+	}
+	return &it
 }
 
 // currentFile returns the gh.FileChange for a.session.selectedFile from the PR's
@@ -382,7 +518,7 @@ func (a *app) footer() string {
 	}
 	switch a.layout.activeView {
 	case viewTodo:
-		return a.todo.Footer(a)
+		return a.todo.Footer()
 	case viewPRs:
 		return a.prs.Footer(a)
 	case viewFiles:
@@ -390,7 +526,7 @@ func (a *app) footer() string {
 	case viewDiff:
 		return a.diff.Footer(a)
 	case viewComments:
-		return a.comments.Footer(a)
+		return a.comments.Footer()
 	}
 	return ""
 }
@@ -592,7 +728,7 @@ func (a *app) onCommentsLoaded(msg commentsLoadedMsg) tea.Cmd {
 	}
 	a.cache.prComments[brain.PRKey(msg.repo, msg.prNum)] = msg.comments
 	if a.layout.activeView == viewComments {
-		a.comments.rebuild(a)
+		a.rebuildComments()
 	}
 	if a.layout.activeView == viewDiff && a.session.selectedPR != nil &&
 		a.session.selectedPR.Repo == msg.repo && a.session.selectedPR.Number == msg.prNum {

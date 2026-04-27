@@ -1,22 +1,4 @@
-package rhodium
-
-import (
-	"fmt"
-	"rhodium/internal/brain"
-	"rhodium/internal/gh"
-	"rhodium/internal/tui/keys"
-	"rhodium/internal/tui/router"
-	"rhodium/internal/tui/styles"
-	"strings"
-
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-)
-
-// --- commentsView ---
-//
-// Read-only view of every comment GitHub has on the selected PR: issue
+// Package comments renders the read-only PR-level comments view: issue
 // comments (the general "leave a comment" stream), reviews (with their
 // APPROVED / CHANGES_REQUESTED / COMMENTED state), and inline review
 // comments anchored to path:line. The fetch is kicked off when the PR is
@@ -26,72 +8,88 @@ import (
 // Routing: opened by `C` from the PR list, todo list, or files view; `h`/
 // esc returns to whichever view it was opened from. The diff view doesn't
 // open this view — inline comments are rendered next to local notes there.
+package comments
 
-type commentsView struct {
+import (
+	"fmt"
+	"strings"
+
+	"rhodium/internal/gh"
+	"rhodium/internal/tui/keys"
+	"rhodium/internal/tui/router"
+	"rhodium/internal/tui/styles"
+
+	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// Model is the comments view's state. ReturnTo records which route the user
+// arrived from so the back binding takes them back where they were; the app
+// sets it before navigating in.
+type Model struct {
 	vp       viewport.Model
-	returnTo router.Route // RoutePRs / RouteTodo / RouteFiles
+	ReturnTo router.Route // RoutePRs / RouteTodo / RouteFiles
 }
 
-func newCommentsView() commentsView {
-	return commentsView{vp: viewport.New(0, 0)}
+func New() Model {
+	return Model{vp: viewport.New(0, 0)}
 }
 
-func (v *commentsView) Resize(w, h int) {
-	v.vp.Width = w
-	v.vp.Height = h
+func (m *Model) Resize(w, h int) {
+	m.vp.Width = w
+	m.vp.Height = h
 }
 
-func (v *commentsView) View(a *app) string {
-	return v.vp.View()
-}
+func (m *Model) View() string { return m.vp.View() }
 
-func (v *commentsView) Footer(a *app) string {
+func (m *Model) Footer() string {
 	return "↑/↓: scroll  h/esc: back  q: quit"
 }
 
-func (v *commentsView) Update(a *app, msg tea.Msg) tea.Cmd {
+// Update routes a key through this view's bindings, falling back to globals,
+// then through the underlying viewport. globals is supplied by the app each
+// call so this package stays unaware of app-flavored binding tables.
+func (m *Model) Update(msg tea.Msg, globals []keys.Binding) tea.Cmd {
 	if key, ok := msg.(tea.KeyMsg); ok {
-		if cmd, matched := keys.Dispatch(key.String(), false, v.bindings(a), globalBindings(a)); matched {
+		if cmd, matched := keys.Dispatch(key.String(), false, m.Bindings(), globals); matched {
 			return cmd
 		}
 	}
 	var cmd tea.Cmd
-	v.vp, cmd = v.vp.Update(msg)
+	m.vp, cmd = m.vp.Update(msg)
 	return cmd
 }
 
-func (v *commentsView) bindings(a *app) []keys.Binding {
+func (m *Model) Bindings() []keys.Binding {
 	return []keys.Binding{
 		{
 			Name: "back", Keys: []string{"esc", "h", "left"},
 			Desc: "back", Group: "Navigate",
 			Action: func() tea.Cmd {
-				return router.Navigate(v.returnTo)
+				return router.Navigate(m.ReturnTo)
 			},
 		},
 	}
 }
 
-// rebuild renders the cached comments for the selected PR into the
-// viewport. Called whenever the comments view is opened or new comments
-// land while the view is active.
-func (v *commentsView) rebuild(a *app) {
-	if a.session.selectedPR == nil {
-		v.vp.SetContent("(no PR selected)")
+// Rebuild renders the cached comments for pr into the viewport. loaded=false
+// renders a "loading…" placeholder; loaded=true with len(comments)==0 is the
+// distinct "GitHub returned no comments" state.
+func (m *Model) Rebuild(pr *gh.PR, comments []gh.Comment, loaded bool) {
+	if pr == nil {
+		m.vp.SetContent("(no PR selected)")
 		return
 	}
-	pr := *a.session.selectedPR
-	comments, ok := a.cache.prComments[brain.PRKey(pr.Repo, pr.Number)]
-
 	header := lipgloss.NewStyle().Bold(true).Render(
 		fmt.Sprintf("Comments on %s#%d", pr.Repo, pr.Number),
 	)
-	if !ok {
-		v.vp.SetContent(header + "\n\n(loading…)")
+	if !loaded {
+		m.vp.SetContent(header + "\n\n(loading…)")
 		return
 	}
 	if len(comments) == 0 {
-		v.vp.SetContent(header + "\n\n(no comments yet)")
+		m.vp.SetContent(header + "\n\n(no comments yet)")
 		return
 	}
 
@@ -106,8 +104,8 @@ func (v *commentsView) rebuild(a *app) {
 			b.WriteByte('\n')
 		}
 	}
-	v.vp.SetContent(b.String())
-	v.vp.GotoTop()
+	m.vp.SetContent(b.String())
+	m.vp.GotoTop()
 }
 
 // renderComment formats a single gh.Comment for the PR-level view. Header

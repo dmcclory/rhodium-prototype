@@ -5,13 +5,12 @@ import (
 	"rhodium/internal/brain"
 	"rhodium/internal/gh"
 	"rhodium/internal/tui/keys"
+	"rhodium/internal/tui/prrow"
 	"rhodium/internal/tui/router"
-	"rhodium/internal/tui/styles"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // --- prsView ---
@@ -205,7 +204,15 @@ func (v *prsView) rebuild(a *app) {
 		allItems = append(allItems, it)
 	}
 
-	cols := computePRCols(allItems)
+	prs := make([]gh.PR, len(allItems))
+	anyScrutiny := false
+	for i, it := range allItems {
+		prs[i] = it.pr
+		if it.scrutinized {
+			anyScrutiny = true
+		}
+	}
+	cols := prrow.ComputeCols(prs, anyScrutiny)
 	for i := range allItems {
 		allItems[i].cols = cols
 	}
@@ -246,49 +253,37 @@ func (v *prsView) rebuild(a *app) {
 	}
 
 	// Todo list is a filtered view over the same data — rebuild in lockstep.
-	a.todo.rebuild(a)
+	a.rebuildTodo()
 }
 
 func (v *prsView) filtering() bool { return v.list.FilterState() == list.Filtering }
 
 // --- prItem ---
 
-// prCols is the per-list set of column widths used to align prItem rows.
-// rebuild walks every item, computes each column's max visible width, and
-// stamps the same prCols on every item — so all rows render against the
-// same grid even though Title() is called per-row by the bubbles list.
-type prCols struct {
-	anyScrutiny bool // any PR is scrutinized → reserve 4 chars at the front
-	repoNum     int
-	status      int
-	title       int
-	author      int
-}
-
 type prItem struct {
 	pr          gh.PR
 	summary     string
 	noteCount   int
 	scrutinized bool
-	cols        prCols
+	cols        prrow.Cols
 }
 
 func (i prItem) Title() string {
 	var b strings.Builder
-	if i.cols.anyScrutiny {
+	if i.cols.AnyScrutiny {
 		if i.scrutinized {
 			b.WriteString("[S] ")
 		} else {
 			b.WriteString("    ")
 		}
 	}
-	b.WriteString(padRight(prRepoNumStr(i.pr), i.cols.repoNum))
+	b.WriteString(prrow.PadRight(prrow.RepoNumStr(i.pr), i.cols.RepoNum))
 	b.WriteString("  ")
-	b.WriteString(padRight(renderPRStatus(i.pr), i.cols.status))
+	b.WriteString(prrow.PadRight(prrow.RenderStatus(i.pr), i.cols.Status))
 	b.WriteString("  ")
-	b.WriteString(padRight(truncate(i.pr.Title, prMaxTitleWidth), i.cols.title))
+	b.WriteString(prrow.PadRight(truncate(i.pr.Title, prrow.MaxTitleWidth), i.cols.Title))
 	b.WriteString("  ")
-	b.WriteString(padRight("@"+i.pr.Author, i.cols.author))
+	b.WriteString(prrow.PadRight("@"+i.pr.Author, i.cols.Author))
 	var parts []string
 	if i.summary != "" {
 		parts = append(parts, i.summary)
@@ -305,113 +300,3 @@ func (i prItem) Title() string {
 }
 func (i prItem) Description() string { return "" }
 func (i prItem) FilterValue() string { return i.Title() }
-
-const prMaxTitleWidth = 60
-
-// computePRCols walks the items once to find the widest visible string per
-// column, so the bubbles list can render every row against a stable grid.
-// Title is capped at prMaxTitleWidth so a single long PR title doesn't push
-// every other column off-screen; the cap is enforced via truncate() on the
-// render path.
-func computePRCols(items []prItem) prCols {
-	var c prCols
-	for _, it := range items {
-		if it.scrutinized {
-			c.anyScrutiny = true
-		}
-		if w := lipgloss.Width(prRepoNumStr(it.pr)); w > c.repoNum {
-			c.repoNum = w
-		}
-		if w := lipgloss.Width(renderPRStatus(it.pr)); w > c.status {
-			c.status = w
-		}
-		title := truncateDisplay(it.pr.Title, prMaxTitleWidth)
-		if w := lipgloss.Width(title); w > c.title {
-			c.title = w
-		}
-		author := "@" + it.pr.Author
-		if w := lipgloss.Width(author); w > c.author {
-			c.author = w
-		}
-	}
-	return c
-}
-
-func prRepoNumStr(p gh.PR) string {
-	return fmt.Sprintf("%s#%d", p.Repo, p.Number)
-}
-
-// renderPRStatus produces the colored status badge for a PR row. Format:
-//
-//	[REVIEW_STATE] glyphs…
-//
-// where glyphs are CI rollup (✓ / ✗ / •) and a ⚠ for merge conflicts. An
-// empty string is returned when the PR has no review decision, isn't a
-// draft, and has no CI / conflict signals — keeps unimportant rows quiet.
-func renderPRStatus(p gh.PR) string {
-	var labels []string
-	switch {
-	case p.IsDraft:
-		labels = append(labels, statusDraftStyle.Render("DRAFT"))
-	case p.ReviewDecision == "APPROVED":
-		labels = append(labels, styles.StatusApproved.Render("APPROVED"))
-	case p.ReviewDecision == "CHANGES_REQUESTED":
-		labels = append(labels, styles.StatusChanges.Render("CHANGES_REQ"))
-	case p.ReviewDecision == "REVIEW_REQUIRED":
-		labels = append(labels, styles.StatusReview.Render("REVIEW_REQ"))
-	}
-	var head string
-	if len(labels) > 0 {
-		head = "[" + strings.Join(labels, " ") + "]"
-	}
-	var glyphs []string
-	switch p.CIStatus {
-	case "SUCCESS":
-		glyphs = append(glyphs, styles.StatusApproved.Render("✓"))
-	case "FAILURE":
-		glyphs = append(glyphs, styles.StatusChanges.Render("✗"))
-	case "PENDING":
-		glyphs = append(glyphs, styles.StatusReview.Render("•"))
-	}
-	if p.Mergeable == "CONFLICTING" {
-		glyphs = append(glyphs, styles.StatusChanges.Render("⚠"))
-	}
-	if len(glyphs) > 0 {
-		if head != "" {
-			head += " "
-		}
-		head += strings.Join(glyphs, "")
-	}
-	return head
-}
-
-var statusDraftStyle = lipgloss.NewStyle().Faint(true)
-
-// padRight right-pads s with spaces to the given visible width. lipgloss.Width
-// strips ANSI codes, so this works after styling.
-func padRight(s string, w int) string {
-	pad := w - lipgloss.Width(s)
-	if pad <= 0 {
-		return s
-	}
-	return s + strings.Repeat(" ", pad)
-}
-
-// truncateDisplay clips s to at most w visible columns, replacing the
-// last char with `…` when clipping. Operates on runes so multi-byte chars
-// don't split mid-byte. Distinct from cli.go's byte-oriented truncate(),
-// which is used for plain-ASCII CLI output.
-func truncateDisplay(s string, w int) string {
-	if lipgloss.Width(s) <= w {
-		return s
-	}
-	runes := []rune(s)
-	if len(runes) <= 1 || w < 1 {
-		return string(runes[:1])
-	}
-	cut := w - 1
-	if cut > len(runes) {
-		cut = len(runes)
-	}
-	return string(runes[:cut]) + "…"
-}
