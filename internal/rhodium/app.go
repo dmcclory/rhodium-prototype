@@ -51,10 +51,9 @@ type app struct {
 	review reviewModal
 	merge  mergeModal
 
-	// Shared PR data. prFiles is keyed by "<repo>#<num>".
-	allPRs          []gh.PR
-	freshKeys       map[string]bool // keys confirmed still open by a repo listing
-	prFiles         map[string][]gh.FileChange
+	// cache holds GitHub-fetched data shared across views.
+	cache cache
+
 	pinnedAttention map[string]bool // pr keys pinned in todo's "needs attention"
 
 	selectedPR     *gh.PR
@@ -62,16 +61,6 @@ type app struct {
 	listViewOrigin view // whichever of viewTodo/viewPRs the user drilled from
 
 	reviewSession *brain.ReviewSession
-
-	// contributors caches the per-repo contributor list fetched on first
-	// use of the @-mention picker. Lifetime is the app session; a restart
-	// re-fetches. Map key is "owner/repo".
-	contributors map[string][]gh.Contributor
-
-	// prComments caches the three GH comment streams per PR. Populated on
-	// openPR; the diff view reads it for inline rendering and the comments
-	// view reads it for the full list.
-	prComments map[string][]gh.Comment
 
 	statusMsg string
 
@@ -93,16 +82,13 @@ func newApp(cfg *Config, b *brain.Brain) *app {
 		comments:        newCommentsView(),
 		review:          newReviewModal(),
 		merge:           newMergeModal(),
-		prFiles:         map[string][]gh.FileChange{},
-		freshKeys:       map[string]bool{},
+		cache:           newCache(),
 		pinnedAttention: map[string]bool{},
-		contributors:    map[string][]gh.Contributor{},
-		prComments:      map[string][]gh.Comment{},
 	}
 
 	cached := b.CachedPRs()
 	if len(cached) > 0 {
-		a.allPRs = cached
+		a.cache.allPRs = cached
 		a.prs.rebuild(a)
 		a.prs.list.Title = fmt.Sprintf("PRs (%d, refreshing…)", len(cached))
 	} else {
@@ -287,10 +273,10 @@ func (a *app) openPR(pr gh.PR) tea.Cmd {
 	a.pollGen++
 	key := brain.PRKey(pr.Repo, pr.Number)
 	cmds := []tea.Cmd{pollTickCmd(a.pollGen)}
-	if _, cached := a.prComments[key]; !cached {
+	if _, cached := a.cache.prComments[key]; !cached {
 		cmds = append(cmds, loadCommentsCmd(pr))
 	}
-	if _, cached := a.prFiles[key]; cached {
+	if _, cached := a.cache.prFiles[key]; cached {
 		a.files.rebuild(a)
 		a.files.list.Title = fmt.Sprintf("Files in %s#%d", pr.Repo, pr.Number)
 		return tea.Batch(cmds...)
@@ -328,7 +314,7 @@ func (a *app) currentFile() (gh.FileChange, bool) {
 	if a.selectedPR == nil {
 		return gh.FileChange{}, false
 	}
-	for _, f := range a.prFiles[brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number)] {
+	for _, f := range a.cache.prFiles[brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number)] {
 		if f.Path == a.selectedFile {
 			return f, true
 		}
@@ -352,7 +338,7 @@ func (a *app) prHasOutstandingWork(pr gh.PR) bool {
 	if !touched {
 		return true // unseen
 	}
-	files, filesLoaded := a.prFiles[brain.PRKey(pr.Repo, pr.Number)]
+	files, filesLoaded := a.cache.prFiles[brain.PRKey(pr.Repo, pr.Number)]
 	if !filesLoaded {
 		return true // touched but files not yet loaded — assume in-progress
 	}
@@ -363,7 +349,7 @@ func (a *app) prHasOutstandingWork(pr gh.PR) bool {
 // left for the reviewer — drives the todo-view title.
 func (a *app) outstandingPRCount() int {
 	n := 0
-	for _, pr := range a.allPRs {
+	for _, pr := range a.cache.allPRs {
 		if a.prHasOutstandingWork(pr) {
 			n++
 		}
@@ -419,12 +405,12 @@ func (a *app) onPRsLoaded(msg prsLoadedMsg) tea.Cmd {
 		return nil
 	}
 	for _, p := range msg.prs {
-		a.freshKeys[brain.PRKey(p.Repo, p.Number)] = true
+		a.cache.markFresh(brain.PRKey(p.Repo, p.Number))
 	}
 	added := mergePRs(a, msg.prs)
 	a.prs.rebuild(a)
-	a.prs.list.Title = fmt.Sprintf("PRs (%d, loading files…)", len(a.allPRs))
-	go a.brain.SetPRCache(a.allPRs)
+	a.prs.list.Title = fmt.Sprintf("PRs (%d, loading files…)", len(a.cache.allPRs))
+	go a.brain.SetPRCache(a.cache.allPRs)
 	return prefetchAllCmd(added)
 }
 
@@ -435,7 +421,7 @@ func (a *app) onFilesLoaded(msg filesLoadedMsg) tea.Cmd {
 		return nil
 	}
 	key := brain.PRKey(msg.pr.Repo, msg.pr.Number)
-	a.prFiles[key] = msg.files
+	a.cache.prFiles[key] = msg.files
 	a.prs.rebuild(a)
 	if a.selectedPR != nil && brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number) == key {
 		a.files.rebuild(a)
@@ -460,18 +446,12 @@ func (a *app) onAutoAdvance(msg autoAdvanceMsg) tea.Cmd {
 }
 
 func (a *app) onPrefetchDone() tea.Cmd {
-	if len(a.freshKeys) > 0 {
-		var live []gh.PR
-		for _, p := range a.allPRs {
-			if a.freshKeys[brain.PRKey(p.Repo, p.Number)] {
-				live = append(live, p)
-			}
-		}
-		a.allPRs = live
+	if len(a.cache.freshKeys) > 0 {
+		a.cache.pruneStale()
 		a.prs.rebuild(a)
-		go a.brain.SetPRCache(a.allPRs)
+		go a.brain.SetPRCache(a.cache.allPRs)
 	}
-	a.prs.list.Title = fmt.Sprintf("PRs (%d)", len(a.allPRs))
+	a.prs.list.Title = fmt.Sprintf("PRs (%d)", len(a.cache.allPRs))
 	return nil
 }
 
@@ -577,31 +557,23 @@ func (a *app) onMergeSubmitted(msg mergeSubmittedMsg) tea.Cmd {
 	}
 	a.statusMsg = fmt.Sprintf("merged: %s on %s#%d", msg.method, msg.repo, msg.prNum)
 	key := brain.PRKey(msg.repo, msg.prNum)
-	kept := a.allPRs[:0]
-	for _, p := range a.allPRs {
-		if brain.PRKey(p.Repo, p.Number) != key {
-			kept = append(kept, p)
-		}
-	}
-	a.allPRs = kept
-	delete(a.freshKeys, key)
-	delete(a.prFiles, key)
+	a.cache.dropPR(key)
 	delete(a.pinnedAttention, key)
 	a.prs.rebuild(a)
-	go a.brain.SetPRCache(a.allPRs)
+	go a.brain.SetPRCache(a.cache.allPRs)
 	return nil
 }
 
 // onCommentsLoaded caches the GH comment streams for the PR. The comments
 // view (if open on this PR) and the diff view (if open on a file in this PR)
-// both pull from a.prComments, so a redraw is enough to surface them — no
-// per-view re-fetch.
+// both pull from a.cache.prComments, so a redraw is enough to surface
+// them — no per-view re-fetch.
 func (a *app) onCommentsLoaded(msg commentsLoadedMsg) tea.Cmd {
 	if msg.err != nil {
 		a.statusMsg = "comments: " + msg.err.Error()
 		return nil
 	}
-	a.prComments[brain.PRKey(msg.repo, msg.prNum)] = msg.comments
+	a.cache.prComments[brain.PRKey(msg.repo, msg.prNum)] = msg.comments
 	if a.activeView == viewComments {
 		a.comments.rebuild(a)
 	}
@@ -620,10 +592,7 @@ func (a *app) onContributorsLoaded(msg contributorsLoadedMsg) tea.Cmd {
 		a.statusMsg = "contributors: " + msg.err.Error()
 		return nil
 	}
-	if a.contributors == nil {
-		a.contributors = map[string][]gh.Contributor{}
-	}
-	a.contributors[msg.repo] = msg.contributors
+	a.cache.contributors[msg.repo] = msg.contributors
 	if a.activeView == viewDiff {
 		a.diff.onContributorsReady(a, msg.repo)
 	}

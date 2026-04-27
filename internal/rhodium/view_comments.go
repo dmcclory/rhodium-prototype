@@ -79,7 +79,7 @@ func (v *commentsView) rebuild(a *app) {
 		return
 	}
 	pr := *a.selectedPR
-	comments, ok := a.prComments[brain.PRKey(pr.Repo, pr.Number)]
+	comments, ok := a.cache.prComments[brain.PRKey(pr.Repo, pr.Number)]
 
 	header := lipgloss.NewStyle().Bold(true).Render(
 		fmt.Sprintf("Comments on %s#%d", pr.Repo, pr.Number),

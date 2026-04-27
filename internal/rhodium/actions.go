@@ -26,7 +26,7 @@ func runAction(a *app, action Action) (tea.Cmd, error) {
 		return nil, fmt.Errorf("no PR selected")
 	}
 	pr := *a.selectedPR
-	files := a.prFiles[brain.PRKey(pr.Repo, pr.Number)]
+	files := a.cache.prFiles[brain.PRKey(pr.Repo, pr.Number)]
 
 	agent := a.cfg.DefaultAgentResolved()
 	if agent.Command == "" {

@@ -95,7 +95,7 @@ func (v *todoView) bindings(a *app) []Binding {
 					return nil
 				}
 				a.selectedPR = &it.pr
-				if _, cached := a.prComments[brain.PRKey(it.pr.Repo, it.pr.Number)]; !cached {
+				if _, cached := a.cache.prComments[brain.PRKey(it.pr.Repo, it.pr.Number)]; !cached {
 					return tea.Batch(loadCommentsCmd(it.pr), a.openComments(viewTodo))
 				}
 				return a.openComments(viewTodo)
@@ -112,7 +112,7 @@ func (v *todoView) delegate(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-// rebuild walks a.allPRs and emits a todoItem for each PR with
+// rebuild walks a.cache.allPRs and emits a todoItem for each PR with
 // outstanding work. Groups into two sections: "needs attention"
 // (in-progress, catch-up, notes) and "new" (never-touched). When
 // there's nothing actionable, shows a "caught up" header so the list
@@ -124,7 +124,7 @@ func (v *todoView) rebuild(a *app) {
 	}
 
 	var actionable, newPRs []todoItem
-	for _, pr := range a.allPRs {
+	for _, pr := range a.cache.allPRs {
 		key := brain.PRKey(pr.Repo, pr.Number)
 		ti := buildTodoItem(a, pr)
 
@@ -271,7 +271,7 @@ func buildTodoItem(a *app, pr gh.PR) *todoItem {
 	touched := a.brain.HasAnyMarks(pr.Repo, pr.Number) ||
 		len(a.brain.AllFileReviewedStates(pr.Repo, pr.Number)) > 0
 
-	files, filesLoaded := a.prFiles[brain.PRKey(pr.Repo, pr.Number)]
+	files, filesLoaded := a.cache.prFiles[brain.PRKey(pr.Repo, pr.Number)]
 	var remaining int
 	if filesLoaded {
 		remaining = a.brain.UnseenCount(pr.Repo, pr.Number, files)

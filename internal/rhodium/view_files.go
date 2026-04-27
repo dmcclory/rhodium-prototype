@@ -164,7 +164,7 @@ func (v *filesView) rebuild(a *app) {
 	if sel, ok := v.list.SelectedItem().(fileItem); ok {
 		savedPath = sel.fc.Path
 	}
-	files := a.prFiles[brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number)]
+	files := a.cache.prFiles[brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number)]
 	reviewedStates := a.brain.AllFileReviewedStates(a.selectedPR.Repo, a.selectedPR.Number)
 	var unseen, partial, seen []fileItem
 	for _, fc := range files {
@@ -324,7 +324,7 @@ func (v *filesView) filtering() bool { return v.list.FilterState() == list.Filte
 // hunks. Returns a sparse slice indexed by 1-based line number. Lines
 // not covered by any hunk are empty strings.
 func patchNewFileLines(a *app, key, path string) []string {
-	files := a.prFiles[key]
+	files := a.cache.prFiles[key]
 	var patch string
 	for _, f := range files {
 		if f.Path == path {

@@ -96,7 +96,7 @@ func (v *prsView) bindings(a *app) []Binding {
 					return nil
 				}
 				a.selectedPR = &it.pr
-				if _, cached := a.prComments[brain.PRKey(it.pr.Repo, it.pr.Number)]; !cached {
+				if _, cached := a.cache.prComments[brain.PRKey(it.pr.Repo, it.pr.Number)]; !cached {
 					return tea.Batch(loadCommentsCmd(it.pr), a.openComments(viewPRs))
 				}
 				return a.openComments(viewPRs)
@@ -132,12 +132,12 @@ func (v *prsView) delegate(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-// mergePRs appends PRs whose (repo, number) aren't already in a.allPRs
+// mergePRs appends PRs whose (repo, number) aren't already in a.cache.allPRs
 // and returns just the newly-added ones, so callers can kick off file
 // prefetch without redundantly re-fetching PRs already loaded.
 func mergePRs(a *app, prs []gh.PR) []gh.PR {
-	seen := make(map[string]bool, len(a.allPRs))
-	for _, p := range a.allPRs {
+	seen := make(map[string]bool, len(a.cache.allPRs))
+	for _, p := range a.cache.allPRs {
 		seen[brain.PRKey(p.Repo, p.Number)] = true
 	}
 	var added []gh.PR
@@ -147,7 +147,7 @@ func mergePRs(a *app, prs []gh.PR) []gh.PR {
 			continue
 		}
 		seen[k] = true
-		a.allPRs = append(a.allPRs, p)
+		a.cache.allPRs = append(a.cache.allPRs, p)
 		added = append(added, p)
 	}
 	return added
@@ -162,15 +162,15 @@ func (v *prsView) rebuild(a *app) {
 	me := a.cfg.GitHubUser
 	// Build all items flat first so we can compute column widths over the
 	// whole set, then partition into buckets afterwards.
-	allItems := make([]prItem, 0, len(a.allPRs))
-	bucket := make([]int, 0, len(a.allPRs)) // 0=mine, 1=in-progress, 2=untouched
-	for _, pr := range a.allPRs {
+	allItems := make([]prItem, 0, len(a.cache.allPRs))
+	bucket := make([]int, 0, len(a.cache.allPRs)) // 0=mine, 1=in-progress, 2=untouched
+	for _, pr := range a.cache.allPRs {
 		it := prItem{pr: pr, noteCount: a.brain.NoteCountForPR(pr.Repo, pr.Number), scrutinized: a.brain.IsScrutinized(pr.Repo, pr.Number)}
 		// A PR is "in progress" if the brain has any marks for it, even
 		// before we've fetched its file list. This keeps already-touched
 		// PRs from popping between buckets during startup prefetch.
 		looked := a.brain.HasAnyMarks(pr.Repo, pr.Number)
-		if files, ok := a.prFiles[brain.PRKey(pr.Repo, pr.Number)]; ok {
+		if files, ok := a.cache.prFiles[brain.PRKey(pr.Repo, pr.Number)]; ok {
 			unseen := a.brain.UnseenCount(pr.Repo, pr.Number, files)
 			if unseen == 0 {
 				it.summary = "✓ caught up"

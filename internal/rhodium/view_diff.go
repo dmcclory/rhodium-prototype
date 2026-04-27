@@ -345,7 +345,7 @@ func ghInlineForFile(a *app, path string) []gh.Comment {
 	if a.selectedPR == nil {
 		return nil
 	}
-	all := a.prComments[brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number)]
+	all := a.cache.prComments[brain.PRKey(a.selectedPR.Repo, a.selectedPR.Number)]
 	var out []gh.Comment
 	for _, c := range all {
 		if c.Type == "inline" && c.Path == path {
@@ -668,7 +668,7 @@ func (v *diffView) openMentionPicker(a *app) tea.Cmd {
 	repo := a.selectedPR.Repo
 	v.mention.open = true
 	v.mention.query = ""
-	if cached, ok := a.contributors[repo]; ok {
+	if cached, ok := a.cache.contributors[repo]; ok {
 		v.mention.loading = false
 		v.mention.list.SetItems(filterContributors(cached, ""))
 		v.mention.list.ResetSelected()
@@ -690,7 +690,7 @@ func (v *diffView) onContributorsReady(a *app, repo string) {
 		return
 	}
 	v.mention.loading = false
-	v.mention.list.SetItems(filterContributors(a.contributors[repo], v.mention.query))
+	v.mention.list.SetItems(filterContributors(a.cache.contributors[repo], v.mention.query))
 	v.sizeMentionPicker(a)
 }
 
@@ -774,7 +774,7 @@ func (v *diffView) refilterMentions(a *app) {
 	if a.selectedPR == nil {
 		return
 	}
-	cached, ok := a.contributors[a.selectedPR.Repo]
+	cached, ok := a.cache.contributors[a.selectedPR.Repo]
 	if !ok {
 		return
 	}
