@@ -9,3 +9,5 @@ bin/
 
 # os
 .DS_Store
+# Added by goreleaser init:
+dist/
