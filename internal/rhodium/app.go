@@ -2,13 +2,15 @@ package rhodium
 
 import (
 	"fmt"
-	"reflect"
 	"rhodium/internal/brain"
 	"rhodium/internal/gh"
 	"rhodium/internal/tui/comments"
+	tuidiff "rhodium/internal/tui/diff"
 	"rhodium/internal/tui/files"
 	"rhodium/internal/tui/help"
 	"rhodium/internal/tui/keys"
+	"rhodium/internal/tui/overlay"
+	"rhodium/internal/tui/prs"
 	"rhodium/internal/tui/router"
 	"rhodium/internal/tui/styles"
 	"rhodium/internal/tui/todo"
@@ -48,9 +50,9 @@ type app struct {
 	layout layout
 
 	todo     todo.Model
-	prs      prsView
+	prs      prs.Model
 	files    files.Model
-	diff     diffView
+	diff     tuidiff.Model
 	comments comments.Model
 	help     help.Model
 
@@ -75,9 +77,9 @@ func newApp(cfg *Config, b *brain.Brain) *app {
 		brain:    b,
 		layout:   layout{activeView: viewTodo},
 		todo:     todo.New(),
-		prs:      newPRsView(),
+		prs:      prs.New(),
 		files:    files.New(),
-		diff:     newDiffView(),
+		diff:     tuidiff.New(),
 		comments: comments.New(),
 		help:     help.New(),
 		review:   newReviewModal(),
@@ -86,14 +88,15 @@ func newApp(cfg *Config, b *brain.Brain) *app {
 		session:  newSession(),
 	}
 	a.files.AgentBindings = agentBindings(a)
+	a.diff.AgentBindings = agentBindings(a)
 
 	cached := b.CachedPRs()
 	if len(cached) > 0 {
 		a.cache.allPRs = cached
-		a.prs.rebuild(a)
-		a.prs.list.Title = fmt.Sprintf("PRs (%d, refreshing…)", len(cached))
+		a.rebuildPRs()
+		a.prs.SetTitle(fmt.Sprintf("PRs (%d, refreshing…)", len(cached)))
 	} else {
-		a.prs.list.Title = "PRs (loading...)"
+		a.prs.SetTitle("PRs (loading...)")
 	}
 
 	return a
@@ -123,12 +126,8 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.onFilesLoaded(m)
 	case autoAdvanceMsg:
 		return a, a.onAutoAdvance(m)
-	case catchUpLoadedMsg:
-		return a, a.diff.onCatchUpLoaded(a, m)
-	case diamondClassifiedMsg:
-		return a, a.diff.onDiamondClassified(a, m)
-	case blobLoadedMsg:
-		return a, a.diff.onBlobLoaded(a, m)
+	case tuidiff.CatchUpLoadedMsg, tuidiff.DiamondClassifiedMsg, tuidiff.BlobLoadedMsg:
+		return a, a.diff.Update(msg, a.brain, globalBindings(a))
 	case prefetchDoneMsg:
 		return a, a.onPrefetchDone()
 	case editorDoneMsg:
@@ -171,6 +170,34 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.rebuildFilesNotes()
 		return a, nil
 
+	case prs.OpenPRMsg:
+		return a, a.openPR(m.PR)
+	case prs.ReviewMsg:
+		return a, a.openReview(m.PR)
+	case prs.MergeMsg:
+		return a, a.openMerge(m.PR)
+	case prs.CommentsMsg:
+		return a, a.openCommentsForPR(m.PR, router.RoutePRs)
+	case prs.ScrutinyToggleMsg:
+		return a, a.toggleScrutiny(m.PR)
+
+	case tuidiff.LeavingMsg:
+		a.rebuildFiles()
+		a.rebuildPRs()
+		return a, router.Navigate(router.RouteFiles)
+	case tuidiff.FileMarkedDoneMsg:
+		a.markSessionFileDone(m.Path)
+		return a, nil
+	case tuidiff.StatusMsg:
+		a.status.msg = m.Text
+		return a, nil
+	case tuidiff.OpenEditorMsg:
+		return a, a.openInEditor(m)
+	case tuidiff.PublishNoteMsg:
+		return a, a.publishNote(m)
+	case tuidiff.LoadContributorsMsg:
+		return a, loadContributorsCmd(m.Repo)
+
 	case tea.KeyMsg:
 		if a.help.Open {
 			switch m.String() {
@@ -199,11 +226,11 @@ func (a *app) View() string {
 	case viewTodo:
 		body = a.todo.View()
 	case viewPRs:
-		body = a.prs.View(a)
+		body = a.prs.View()
 	case viewFiles:
 		body = a.files.View()
 	case viewDiff:
-		body = a.diff.View(a)
+		body = a.diff.View()
 	case viewComments:
 		body = a.comments.View()
 	}
@@ -233,13 +260,13 @@ func (a *app) renderHelp() string {
 		bindings = a.todo.Bindings()
 		label = "Todo"
 	case viewPRs:
-		bindings = a.prs.bindings(a)
+		bindings = a.prs.Bindings()
 		label = "All PRs"
 	case viewFiles:
 		bindings = a.files.Bindings()
 		label = "Files"
 	case viewDiff:
-		bindings = a.diff.bindings(a)
+		bindings = a.diff.Bindings()
 		label = "Diff"
 	case viewComments:
 		bindings = a.comments.Bindings()
@@ -262,7 +289,7 @@ func centerOverlay(bg, fg string, width, height int) string {
 	if y < 0 {
 		y = 0
 	}
-	return overlay(bg, fg, x, y)
+	return overlay.Render(bg, fg, x, y)
 }
 
 // --- routing ---
@@ -272,11 +299,11 @@ func (a *app) routeKey(key tea.KeyMsg) tea.Cmd {
 	case viewTodo:
 		return a.todo.Update(key, globalBindings(a))
 	case viewPRs:
-		return a.prs.Update(a, key)
+		return a.prs.Update(key, globalBindings(a))
 	case viewFiles:
 		return a.files.Update(key, globalBindings(a))
 	case viewDiff:
-		return a.diff.Update(a, key)
+		return a.diff.Update(key, a.brain, globalBindings(a))
 	case viewComments:
 		return a.comments.Update(key, globalBindings(a))
 	}
@@ -288,11 +315,11 @@ func (a *app) routeToActive(msg tea.Msg) tea.Cmd {
 	case viewTodo:
 		return a.todo.Update(msg, globalBindings(a))
 	case viewPRs:
-		return a.prs.Update(a, msg)
+		return a.prs.Update(msg, globalBindings(a))
 	case viewFiles:
 		return a.files.Update(msg, globalBindings(a))
 	case viewDiff:
-		return a.diff.Update(a, msg)
+		return a.diff.Update(msg, a.brain, globalBindings(a))
 	case viewComments:
 		return a.comments.Update(msg, globalBindings(a))
 	}
@@ -306,6 +333,7 @@ func (a *app) relayout() {
 	a.prs.Resize(listW, listH)
 	a.files.Resize(listW, listH)
 	a.diff.Resize(listW, listH)
+	a.diff.SetLayoutSize(a.layout.width, a.layout.height)
 	a.comments.Resize(listW, listH)
 }
 
@@ -342,10 +370,34 @@ func (a *app) openPR(pr gh.PR) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// openFile transitions files → diff, delegating to diffView.open for the
-// actual state reset + fetch commands.
+// openFile transitions files → diff, delegating to diff.Model.Open for
+// the actual state reset + fetch commands.
 func (a *app) openFile(fc gh.FileChange) tea.Cmd {
-	return a.diff.open(a, fc)
+	if a.session.selectedPR == nil {
+		return nil
+	}
+	a.session.selectedFile = fc.Path
+	a.layout.focus(viewDiff)
+	pr := a.session.selectedPR
+	ghInline := ghInlineForFile(a, fc.Path)
+	return a.diff.Open(a.brain, pr, fc, ghInline)
+}
+
+// ghInlineForFile filters the cached PR comments down to inline ones on
+// the given path. Empty result is fine — comments may not have loaded
+// yet, or the file simply has none.
+func ghInlineForFile(a *app, path string) []gh.Comment {
+	if a.session.selectedPR == nil {
+		return nil
+	}
+	all := a.cache.prComments[brain.PRKey(a.session.selectedPR.Repo, a.session.selectedPR.Number)]
+	var out []gh.Comment
+	for _, c := range all {
+		if c.Type == "inline" && c.Path == path {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // openComments transitions to the PR-level comments view. The comments
@@ -534,11 +586,11 @@ func (a *app) footer() string {
 	case viewTodo:
 		return a.todo.Footer()
 	case viewPRs:
-		return a.prs.Footer(a)
+		return a.prs.Footer()
 	case viewFiles:
 		return a.files.Footer()
 	case viewDiff:
-		return a.diff.Footer(a)
+		return a.diff.Footer()
 	case viewComments:
 		return a.comments.Footer()
 	}
@@ -575,8 +627,8 @@ func (a *app) onPRsLoaded(msg prsLoadedMsg) tea.Cmd {
 		a.cache.markFresh(brain.PRKey(p.Repo, p.Number))
 	}
 	added := mergePRs(a, msg.prs)
-	a.prs.rebuild(a)
-	a.prs.list.Title = fmt.Sprintf("PRs (%d, loading files…)", len(a.cache.allPRs))
+	a.rebuildPRs()
+	a.prs.SetTitle(fmt.Sprintf("PRs (%d, loading files…)", len(a.cache.allPRs)))
 	go a.brain.SetPRCache(a.cache.allPRs)
 	return prefetchAllCmd(added)
 }
@@ -588,7 +640,7 @@ func (a *app) onFilesLoaded(msg filesLoadedMsg) tea.Cmd {
 	}
 	key := brain.PRKey(msg.pr.Repo, msg.pr.Number)
 	a.cache.prFiles[key] = msg.files
-	a.prs.rebuild(a)
+	a.rebuildPRs()
 	if a.session.selectedPR != nil && brain.PRKey(a.session.selectedPR.Repo, a.session.selectedPR.Number) == key {
 		a.rebuildFiles()
 		a.files.SetTitle(fmt.Sprintf("Files in %s#%d", msg.pr.Repo, msg.pr.Number))
@@ -601,7 +653,7 @@ func (a *app) onFilesLoaded(msg filesLoadedMsg) tea.Cmd {
 
 func (a *app) onAutoAdvance(msg autoAdvanceMsg) tea.Cmd {
 	if len(msg.advancedFiles) > 0 {
-		a.prs.rebuild(a)
+		a.rebuildPRs()
 		if a.session.selectedPR != nil && brain.PRKey(a.session.selectedPR.Repo, a.session.selectedPR.Number) == msg.prKey {
 			a.rebuildFiles()
 			a.session.review = a.brain.ActiveSession(a.session.selectedPR.Repo, a.session.selectedPR.Number)
@@ -614,10 +666,10 @@ func (a *app) onAutoAdvance(msg autoAdvanceMsg) tea.Cmd {
 func (a *app) onPrefetchDone() tea.Cmd {
 	if len(a.cache.freshKeys) > 0 {
 		a.cache.pruneStale()
-		a.prs.rebuild(a)
+		a.rebuildPRs()
 		go a.brain.SetPRCache(a.cache.allPRs)
 	}
-	a.prs.list.Title = fmt.Sprintf("PRs (%d)", len(a.cache.allPRs))
+	a.prs.SetTitle(fmt.Sprintf("PRs (%d)", len(a.cache.allPRs)))
 	return nil
 }
 
@@ -631,14 +683,11 @@ func (a *app) onEditorDone(msg editorDoneMsg) tea.Cmd {
 		return nil
 	}
 	if a.session.selectedPR != nil {
-		pr := *a.session.selectedPR
 		if a.layout.activeView == viewDiff && a.session.selectedFile != "" {
-			a.diff.marks = a.brain.HunkMarks(pr.Repo, pr.Number, a.session.selectedFile)
-			a.diff.notes = a.brain.NotesForFile(pr.Repo, pr.Number, a.session.selectedFile)
-			a.diff.redraw()
+			a.diff.RefreshFromBrain(a.brain)
 		}
 		a.rebuildFiles()
-		a.prs.rebuild(a)
+		a.rebuildPRs()
 	}
 	return nil
 }
@@ -672,10 +721,9 @@ func (a *app) onInlineNotesReady(msg inlineNotesReadyMsg) tea.Cmd {
 	a.status.msg = fmt.Sprintf("%s: %d notes added", msg.action, saved)
 	// Refresh list glyphs / diff overlay so new notes show up immediately.
 	a.rebuildFiles()
-	a.prs.rebuild(a)
+	a.rebuildPRs()
 	if a.layout.activeView == viewDiff && a.session.selectedFile != "" {
-		a.diff.notes = a.brain.NotesForFile(msg.pr.Repo, msg.pr.Number, a.session.selectedFile)
-		a.diff.redraw()
+		a.diff.RefreshNotes(a.brain)
 	}
 	return nil
 }
@@ -693,8 +741,7 @@ func (a *app) onNotePublished(msg notePublishedMsg) tea.Cmd {
 		return nil
 	}
 	if a.layout.activeView == viewDiff && a.session.selectedPR != nil && a.session.selectedFile != "" {
-		a.diff.notes = a.brain.NotesForFile(a.session.selectedPR.Repo, a.session.selectedPR.Number, a.session.selectedFile)
-		a.diff.redraw()
+		a.diff.RefreshNotes(a.brain)
 	}
 	a.status.msg = fmt.Sprintf("published note → GitHub #%d", msg.ghID)
 	return nil
@@ -725,7 +772,7 @@ func (a *app) onMergeSubmitted(msg mergeSubmittedMsg) tea.Cmd {
 	key := brain.PRKey(msg.repo, msg.prNum)
 	a.cache.dropPR(key)
 	delete(a.session.pinnedAttention, key)
-	a.prs.rebuild(a)
+	a.rebuildPRs()
 	go a.brain.SetPRCache(a.cache.allPRs)
 	return nil
 }
@@ -745,7 +792,7 @@ func (a *app) onCommentsLoaded(msg commentsLoadedMsg) tea.Cmd {
 	}
 	if a.layout.activeView == viewDiff && a.session.selectedPR != nil &&
 		a.session.selectedPR.Repo == msg.repo && a.session.selectedPR.Number == msg.prNum {
-		a.diff.refreshGHInline(a)
+		a.diff.RefreshGHInline(msg.comments)
 	}
 	return nil
 }
@@ -758,10 +805,7 @@ func (a *app) onContributorsLoaded(msg contributorsLoadedMsg) tea.Cmd {
 		a.status.msg = "contributors: " + msg.err.Error()
 		return nil
 	}
-	a.cache.contributors[msg.repo] = msg.contributors
-	if a.layout.activeView == viewDiff {
-		a.diff.onContributorsReady(a, msg.repo)
-	}
+	a.diff.SetContributors(msg.repo, msg.contributors)
 	return nil
 }
 
@@ -774,30 +818,15 @@ func (a *app) onPollTick(msg pollTickMsg) tea.Cmd {
 	if msg.gen != a.status.pollGen || a.session.selectedPR == nil {
 		return nil
 	}
-	pr := *a.session.selectedPR
-	changed := false
-
 	if a.layout.activeView == viewDiff && a.session.selectedFile != "" {
-		newMarks := a.brain.HunkMarks(pr.Repo, pr.Number, a.session.selectedFile)
-		if !reflect.DeepEqual(newMarks, a.diff.marks) {
-			a.diff.marks = newMarks
-			changed = true
-		}
-		newNotes := a.brain.NotesForFile(pr.Repo, pr.Number, a.session.selectedFile)
-		if !reflect.DeepEqual(newNotes, a.diff.notes) {
-			a.diff.notes = newNotes
-			changed = true
-		}
-		if changed {
-			a.diff.redraw()
-		}
+		a.diff.RefreshFromBrain(a.brain)
 	}
 
 	// Always rebuild item lists — cheap, and catches per-file status
 	// flips that don't touch the current diff buffer but change file-list
 	// glyphs.
 	a.rebuildFiles()
-	a.prs.rebuild(a)
+	a.rebuildPRs()
 
 	return pollTickCmd(a.status.pollGen)
 }

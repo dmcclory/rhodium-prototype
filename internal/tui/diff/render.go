@@ -1,13 +1,14 @@
-package rhodium
+package diff
 
 import (
 	"fmt"
 	"regexp"
-	"rhodium/internal/brain"
-	"rhodium/internal/diff"
-	"rhodium/internal/gh"
 	"strconv"
 	"strings"
+
+	"rhodium/internal/brain"
+	corediff "rhodium/internal/diff"
+	"rhodium/internal/gh"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -32,10 +33,10 @@ func notesByLine(notes []brain.Note) map[int][]brain.Note {
 	return m
 }
 
-// ghInlineByLine groups GH inline comments by their new-file line number,
-// the same key local notes use. Comments whose ID matches a local note's
-// GitHubCommentID are dropped so we don't double-render notes that this
-// reviewer already published themselves.
+// ghInlineByLine groups GH inline comments by their new-file line
+// number, the same key local notes use. Comments whose ID matches a
+// local note's GitHubCommentID are dropped so we don't double-render
+// notes that this reviewer already published themselves.
 func ghInlineByLine(ghs []gh.Comment, notes []brain.Note) map[int][]gh.Comment {
 	skip := map[int64]bool{}
 	for _, n := range notes {
@@ -114,12 +115,12 @@ func parseHunkRange(header string) hunkRange {
 	return hunkRange{newStart: start, newCount: count}
 }
 
-// renderHunks produces the diff body with a "[✓]"/"[ ]" marker prepended to
-// each hunk header. The hunk at focusedIdx is rendered with a reverse-video
-// header so you can see what `space` / `up` / `down` will act on. Returns
-// the rendered body and a parallel slice with each hunk's header line offset
-// for SetYOffset-based navigation.
-func renderHunks(hunks []diff.Hunk, marks map[string]bool, focusedIdx int, notes []brain.Note, ghInline []gh.Comment, cursorLine int) (string, []int, []int) {
+// renderHunks produces the diff body with a "[✓]"/"[ ]" marker prepended
+// to each hunk header. The hunk at focusedIdx is rendered with a
+// reverse-video header so you can see what `space` / `up` / `down` will
+// act on. Returns the rendered body and a parallel slice with each
+// hunk's header line offset for SetYOffset-based navigation.
+func renderHunks(hunks []corediff.Hunk, marks map[string]bool, focusedIdx int, notes []brain.Note, ghInline []gh.Comment, cursorLine int) (string, []int, []int) {
 	byLine := notesByLine(notes)
 	ghByLine := ghInlineByLine(ghInline, notes)
 	var b strings.Builder
@@ -189,10 +190,11 @@ func colorDiffLine(line string) string {
 	}
 }
 
-// renderFullFile produces a full-file view with diff lines colored inline.
-// Unchanged lines show with line numbers; additions are green, deletions red.
-// diff.Hunk headers with mark indicators are shown at each change boundary.
-func renderFullFile(fileContent string, hunks []diff.Hunk, marks map[string]bool, focusedIdx int, notes []brain.Note, ghInline []gh.Comment, cursorLine int) (string, []int, []int) {
+// renderFullFile produces a full-file view with diff lines colored
+// inline. Unchanged lines show with line numbers; additions are green,
+// deletions red. Hunk headers with mark indicators are shown at each
+// change boundary.
+func renderFullFile(fileContent string, hunks []corediff.Hunk, marks map[string]bool, focusedIdx int, notes []brain.Note, ghInline []gh.Comment, cursorLine int) (string, []int, []int) {
 	byLine := notesByLine(notes)
 	ghByLine := ghInlineByLine(ghInline, notes)
 	fileLines := strings.Split(fileContent, "\n")
@@ -201,7 +203,7 @@ func renderFullFile(fileContent string, hunks []diff.Hunk, marks map[string]bool
 	}
 
 	type parsedHunk struct {
-		diff.Hunk
+		corediff.Hunk
 		r hunkRange
 	}
 	parsed := make([]parsedHunk, len(hunks))
@@ -292,4 +294,13 @@ func renderFullFile(fileContent string, hunks []diff.Hunk, marks map[string]bool
 	}
 
 	return b.String(), hunkLineOffsets, lineMap
+}
+
+// ParseHunkRange exposes the internal hunk-range parser to the rhodium
+// package, which still uses it for building patchNewFileLines for the
+// notes-tab content. The existing rhodium copy was the only other caller;
+// re-exporting from here lets render_hunks.go go away cleanly.
+func ParseHunkRange(header string) (newStart, newCount int) {
+	r := parseHunkRange(header)
+	return r.newStart, r.newCount
 }

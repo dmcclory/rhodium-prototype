@@ -6,10 +6,17 @@ import (
 
 	"rhodium/internal/brain"
 	"rhodium/internal/diff"
+	tuidiff "rhodium/internal/tui/diff"
 	"rhodium/internal/tui/files"
 
 	"github.com/charmbracelet/lipgloss"
 )
+
+// filesNoteStyle paints the trailing "RH: <body>" preview under each
+// note in the files-view notes tab. Same color as the diff view's note
+// rendering, kept local so the rebuild_files helpers don't depend on the
+// diff package's internal style table.
+var filesNoteStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 
 // rebuildFiles walks the cached file list for the selected PR and emits a
 // files.Item per change. Status, note count, and catch-up flag come from
@@ -108,7 +115,7 @@ func (a *app) rebuildFilesNotes() {
 			}
 			b.WriteString(lineStr + "\n")
 		}
-		b.WriteString(noteStyle.Render("  "+strings.Repeat(" ", 4)+"  RH: "+n.Body) + "\n")
+		b.WriteString(filesNoteStyle.Render("  "+strings.Repeat(" ", 4)+"  RH: "+n.Body) + "\n")
 	}
 	a.files.SetNotes(b.String())
 }
@@ -131,16 +138,16 @@ func patchNewFileLines(a *app, key, path string) []string {
 	hunks := diff.ParseHunks(patch)
 	maxLine := 0
 	for _, h := range hunks {
-		r := parseHunkRange(h.Header)
-		end := r.newStart + r.newCount
+		start, count := tuidiff.ParseHunkRange(h.Header)
+		end := start + count
 		if end > maxLine {
 			maxLine = end
 		}
 	}
 	lines := make([]string, maxLine+1)
 	for _, h := range hunks {
-		r := parseHunkRange(h.Header)
-		cur := r.newStart
+		start, _ := tuidiff.ParseHunkRange(h.Header)
+		cur := start
 		for _, line := range h.BodyLines {
 			if len(line) == 0 {
 				if cur < len(lines) {

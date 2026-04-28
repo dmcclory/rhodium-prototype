@@ -6,23 +6,22 @@ import (
 )
 
 // cache holds data fetched from GitHub, denormalized for the views to read.
-// Populated by async tea.Cmds (loadRepoPRsCmd, loadFilesCmd, loadCommentsCmd,
-// contributors fetch). PR-scoped maps are keyed by brain.PRKey(repo, n);
-// contributors is keyed by "owner/repo".
+// Populated by async tea.Cmds (loadRepoPRsCmd, loadFilesCmd,
+// loadCommentsCmd). PR-scoped maps are keyed by brain.PRKey(repo, n).
+// Contributors are cached on the diff view itself, not here, since only
+// that view consumes them.
 type cache struct {
-	allPRs       []gh.PR
-	freshKeys    map[string]bool             // confirmed by latest repo listing
-	prFiles      map[string][]gh.FileChange  // pr key → file list
-	prComments   map[string][]gh.Comment     // pr key → comments
-	contributors map[string][]gh.Contributor // repo → contributor list
+	allPRs     []gh.PR
+	freshKeys  map[string]bool            // confirmed by latest repo listing
+	prFiles    map[string][]gh.FileChange // pr key → file list
+	prComments map[string][]gh.Comment    // pr key → comments
 }
 
 func newCache() cache {
 	return cache{
-		freshKeys:    map[string]bool{},
-		prFiles:      map[string][]gh.FileChange{},
-		prComments:   map[string][]gh.Comment{},
-		contributors: map[string][]gh.Contributor{},
+		freshKeys:  map[string]bool{},
+		prFiles:    map[string][]gh.FileChange{},
+		prComments: map[string][]gh.Comment{},
 	}
 }
 
