@@ -963,3 +963,17 @@ func humanizeTime(ts string) string {
 		return t.Format("2006-01-02")
 	}
 }
+
+func shortSHA(s string) string {
+	if len(s) > 7 {
+		return s[:7]
+	}
+	return s
+}
+
+// hashLine wraps a single string as a single-line "+"-prefixed hunk body
+// and runs it through the hunk hasher. Used by the CLI surface for note
+// line anchoring; the diff view has its own copy for the same purpose.
+func hashLine(s string) string {
+	return diff.HashHunkBody([]string{"+" + s})
+}

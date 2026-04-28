@@ -9,8 +9,10 @@ import (
 	"rhodium/internal/tui/files"
 	"rhodium/internal/tui/help"
 	"rhodium/internal/tui/keys"
+	"rhodium/internal/tui/merge"
 	"rhodium/internal/tui/overlay"
 	"rhodium/internal/tui/prs"
+	"rhodium/internal/tui/review"
 	"rhodium/internal/tui/router"
 	"rhodium/internal/tui/styles"
 	"rhodium/internal/tui/todo"
@@ -57,8 +59,8 @@ type app struct {
 	help     help.Model
 
 	// review modal lives at app level so any list view can open it.
-	review reviewModal
-	merge  mergeModal
+	review review.Model
+	merge  merge.Model
 
 	// cache holds GitHub-fetched data shared across views.
 	cache cache
@@ -75,15 +77,15 @@ func newApp(cfg *Config, b *brain.Brain) *app {
 	a := &app{
 		cfg:      cfg,
 		brain:    b,
-		layout:   layout{activeView: viewTodo},
+		layout:   layout{activeView: router.RouteTodo},
 		todo:     todo.New(),
 		prs:      prs.New(),
 		files:    files.New(),
 		diff:     tuidiff.New(),
 		comments: comments.New(),
 		help:     help.New(),
-		review:   newReviewModal(),
-		merge:    newMergeModal(),
+		review:   review.New(),
+		merge:    merge.New(),
 		cache:    newCache(),
 		session:  newSession(),
 	}
@@ -138,10 +140,16 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.onInlineNotesReady(m)
 	case notePublishedMsg:
 		return a, a.onNotePublished(m)
-	case reviewSubmittedMsg:
+	case review.SubmittedMsg:
 		return a, a.onReviewSubmitted(m)
-	case mergeSubmittedMsg:
+	case review.StatusMsg:
+		a.status.msg = m.Text
+		return a, nil
+	case merge.SubmittedMsg:
 		return a, a.onMergeSubmitted(m)
+	case merge.StatusMsg:
+		a.status.msg = m.Text
+		return a, nil
 	case contributorsLoadedMsg:
 		return a, a.onContributorsLoaded(m)
 	case commentsLoadedMsg:
@@ -150,15 +158,15 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.onPollTick(m)
 
 	case router.NavigatedMsg:
-		a.onNavigated(m)
+		a.layout.focus(m.To)
 		return a, nil
 
 	case todo.OpenPRMsg:
 		return a, a.openPR(m.PR)
 	case todo.ReviewMsg:
-		return a, a.openReview(m.PR)
+		return a, a.review.OpenFor(m.PR)
 	case todo.MergeMsg:
-		return a, a.openMerge(m.PR)
+		return a, a.merge.OpenFor(m.PR, gh.MergeMethod(a.cfg.MergeMethodResolved()))
 	case todo.CommentsMsg:
 		return a, a.openCommentsForPR(m.PR, router.RouteTodo)
 
@@ -173,9 +181,9 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case prs.OpenPRMsg:
 		return a, a.openPR(m.PR)
 	case prs.ReviewMsg:
-		return a, a.openReview(m.PR)
+		return a, a.review.OpenFor(m.PR)
 	case prs.MergeMsg:
-		return a, a.openMerge(m.PR)
+		return a, a.merge.OpenFor(m.PR, gh.MergeMethod(a.cfg.MergeMethodResolved()))
 	case prs.CommentsMsg:
 		return a, a.openCommentsForPR(m.PR, router.RoutePRs)
 	case prs.ScrutinyToggleMsg:
@@ -206,11 +214,11 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, nil
 		}
-		if a.review.open {
-			return a, a.updateReviewKeys(m)
+		if a.review.Active {
+			return a, a.review.Update(m)
 		}
-		if a.merge.open {
-			return a, a.updateMergeKeys(m)
+		if a.merge.Active {
+			return a, a.merge.Update(m)
 		}
 		return a, a.routeKey(m)
 	}
@@ -223,24 +231,24 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a *app) View() string {
 	var body string
 	switch a.layout.activeView {
-	case viewTodo:
+	case router.RouteTodo:
 		body = a.todo.View()
-	case viewPRs:
+	case router.RoutePRs:
 		body = a.prs.View()
-	case viewFiles:
+	case router.RouteFiles:
 		body = a.files.View()
-	case viewDiff:
+	case router.RouteDiff:
 		body = a.diff.View()
-	case viewComments:
+	case router.RouteComments:
 		body = a.comments.View()
 	}
 	rendered := styles.App.Render(body) + "\n" + lipgloss.NewStyle().Faint(true).Render(a.footer())
 
-	if a.review.open {
-		rendered = centerOverlay(rendered, a.renderReviewModal(), a.layout.width, a.layout.height)
+	if a.review.Active {
+		rendered = centerOverlay(rendered, a.review.Render(), a.layout.width, a.layout.height)
 	}
-	if a.merge.open {
-		rendered = centerOverlay(rendered, a.renderMergeModal(), a.layout.width, a.layout.height)
+	if a.merge.Active {
+		rendered = centerOverlay(rendered, a.merge.Render(), a.layout.width, a.layout.height)
 	}
 	if a.help.Open {
 		rendered = centerOverlay(rendered, a.renderHelp(), a.layout.width, a.layout.height)
@@ -256,19 +264,19 @@ func (a *app) renderHelp() string {
 	var bindings []keys.Binding
 	var label string
 	switch a.layout.activeView {
-	case viewTodo:
+	case router.RouteTodo:
 		bindings = a.todo.Bindings()
 		label = "Todo"
-	case viewPRs:
+	case router.RoutePRs:
 		bindings = a.prs.Bindings()
 		label = "All PRs"
-	case viewFiles:
+	case router.RouteFiles:
 		bindings = a.files.Bindings()
 		label = "Files"
-	case viewDiff:
+	case router.RouteDiff:
 		bindings = a.diff.Bindings()
 		label = "Diff"
-	case viewComments:
+	case router.RouteComments:
 		bindings = a.comments.Bindings()
 		label = "Comments"
 	}
@@ -296,15 +304,15 @@ func centerOverlay(bg, fg string, width, height int) string {
 
 func (a *app) routeKey(key tea.KeyMsg) tea.Cmd {
 	switch a.layout.activeView {
-	case viewTodo:
+	case router.RouteTodo:
 		return a.todo.Update(key, globalBindings(a))
-	case viewPRs:
+	case router.RoutePRs:
 		return a.prs.Update(key, globalBindings(a))
-	case viewFiles:
+	case router.RouteFiles:
 		return a.files.Update(key, globalBindings(a))
-	case viewDiff:
+	case router.RouteDiff:
 		return a.diff.Update(key, a.brain, globalBindings(a))
-	case viewComments:
+	case router.RouteComments:
 		return a.comments.Update(key, globalBindings(a))
 	}
 	return nil
@@ -312,15 +320,15 @@ func (a *app) routeKey(key tea.KeyMsg) tea.Cmd {
 
 func (a *app) routeToActive(msg tea.Msg) tea.Cmd {
 	switch a.layout.activeView {
-	case viewTodo:
+	case router.RouteTodo:
 		return a.todo.Update(msg, globalBindings(a))
-	case viewPRs:
+	case router.RoutePRs:
 		return a.prs.Update(msg, globalBindings(a))
-	case viewFiles:
+	case router.RouteFiles:
 		return a.files.Update(msg, globalBindings(a))
-	case viewDiff:
+	case router.RouteDiff:
 		return a.diff.Update(msg, a.brain, globalBindings(a))
-	case viewComments:
+	case router.RouteComments:
 		return a.comments.Update(msg, globalBindings(a))
 	}
 	return nil
@@ -346,12 +354,8 @@ func (a *app) openPR(pr gh.PR) tea.Cmd {
 	a.session.listOrigin = a.layout.activeView
 	a.session.selectedPR = &pr
 	a.session.review = a.brain.ActiveSession(pr.Repo, pr.Number)
-	a.layout.focus(viewFiles)
-	if a.session.listOrigin == viewTodo {
-		a.files.BackRoute = router.RouteTodo
-	} else {
-		a.files.BackRoute = router.RoutePRs
-	}
+	a.layout.focus(router.RouteFiles)
+	a.files.BackRoute = a.session.listOrigin
 	a.rebuildFilesDesc()
 	gen := a.status.bumpPoll()
 	key := brain.PRKey(pr.Repo, pr.Number)
@@ -377,7 +381,7 @@ func (a *app) openFile(fc gh.FileChange) tea.Cmd {
 		return nil
 	}
 	a.session.selectedFile = fc.Path
-	a.layout.focus(viewDiff)
+	a.layout.focus(router.RouteDiff)
 	pr := a.session.selectedPR
 	ghInline := ghInlineForFile(a, fc.Path)
 	return a.diff.Open(a.brain, pr, fc, ghInline)
@@ -409,7 +413,7 @@ func (a *app) openComments(returnTo router.Route) tea.Cmd {
 		return nil
 	}
 	a.comments.ReturnTo = returnTo
-	a.layout.focus(viewComments)
+	a.layout.focus(router.RouteComments)
 	a.rebuildComments()
 	return nil
 }
@@ -576,47 +580,28 @@ func (a *app) footer() string {
 	if a.status.msg != "" {
 		return a.status.msg
 	}
-	if a.review.open {
-		return "review modal — tab: cycle event   ctrl+s: submit   esc: cancel"
+	if a.review.Active {
+		return a.review.Footer()
 	}
-	if a.merge.open {
-		return "merge modal — tab: cycle method   ctrl+s: merge   esc: cancel"
+	if a.merge.Active {
+		return a.merge.Footer()
 	}
 	switch a.layout.activeView {
-	case viewTodo:
+	case router.RouteTodo:
 		return a.todo.Footer()
-	case viewPRs:
+	case router.RoutePRs:
 		return a.prs.Footer()
-	case viewFiles:
+	case router.RouteFiles:
 		return a.files.Footer()
-	case viewDiff:
+	case router.RouteDiff:
 		return a.diff.Footer()
-	case viewComments:
+	case router.RouteComments:
 		return a.comments.Footer()
 	}
 	return ""
 }
 
 // --- async message handlers ---
-
-// onNavigated is the bridge between router.Route (the view-package-facing
-// vocabulary) and the view enum (internal to app.go). The view enum stays
-// here so View()/routeKey/routeToActive switches keep their compile-time
-// exhaustiveness; bindings see Route only.
-func (a *app) onNavigated(m router.NavigatedMsg) {
-	switch m.To {
-	case router.RouteTodo:
-		a.layout.focus(viewTodo)
-	case router.RoutePRs:
-		a.layout.focus(viewPRs)
-	case router.RouteFiles:
-		a.layout.focus(viewFiles)
-	case router.RouteDiff:
-		a.layout.focus(viewDiff)
-	case router.RouteComments:
-		a.layout.focus(viewComments)
-	}
-}
 
 func (a *app) onPRsLoaded(msg prsLoadedMsg) tea.Cmd {
 	if msg.err != nil {
@@ -683,7 +668,7 @@ func (a *app) onEditorDone(msg editorDoneMsg) tea.Cmd {
 		return nil
 	}
 	if a.session.selectedPR != nil {
-		if a.layout.activeView == viewDiff && a.session.selectedFile != "" {
+		if a.layout.activeView == router.RouteDiff && a.session.selectedFile != "" {
 			a.diff.RefreshFromBrain(a.brain)
 		}
 		a.rebuildFiles()
@@ -722,7 +707,7 @@ func (a *app) onInlineNotesReady(msg inlineNotesReadyMsg) tea.Cmd {
 	// Refresh list glyphs / diff overlay so new notes show up immediately.
 	a.rebuildFiles()
 	a.rebuildPRs()
-	if a.layout.activeView == viewDiff && a.session.selectedFile != "" {
+	if a.layout.activeView == router.RouteDiff && a.session.selectedFile != "" {
 		a.diff.RefreshNotes(a.brain)
 	}
 	return nil
@@ -740,7 +725,7 @@ func (a *app) onNotePublished(msg notePublishedMsg) tea.Cmd {
 		a.status.msg = "publish saved on GitHub but local stamp failed: " + err.Error()
 		return nil
 	}
-	if a.layout.activeView == viewDiff && a.session.selectedPR != nil && a.session.selectedFile != "" {
+	if a.layout.activeView == router.RouteDiff && a.session.selectedPR != nil && a.session.selectedFile != "" {
 		a.diff.RefreshNotes(a.brain)
 	}
 	a.status.msg = fmt.Sprintf("published note → GitHub #%d", msg.ghID)
@@ -750,12 +735,12 @@ func (a *app) onNotePublished(msg notePublishedMsg) tea.Cmd {
 // onReviewSubmitted lands after gh.SubmitReview returns. The PR list doesn't
 // re-fetch state — GitHub's approval status isn't rendered in the TUI
 // today — but the status line confirms what shipped.
-func (a *app) onReviewSubmitted(msg reviewSubmittedMsg) tea.Cmd {
-	if msg.err != nil {
-		a.status.msg = "review: " + msg.err.Error()
+func (a *app) onReviewSubmitted(msg review.SubmittedMsg) tea.Cmd {
+	if msg.Err != nil {
+		a.status.msg = "review: " + msg.Err.Error()
 		return nil
 	}
-	a.status.msg = fmt.Sprintf("review submitted: %s on %s#%d", msg.event, msg.repo, msg.prNum)
+	a.status.msg = fmt.Sprintf("review submitted: %s on %s#%d", msg.Event, msg.Repo, msg.PRNum)
 	return nil
 }
 
@@ -763,13 +748,13 @@ func (a *app) onReviewSubmitted(msg reviewSubmittedMsg) tea.Cmd {
 // from allPRs locally so it disappears from the lists without a full
 // refetch — the next background refresh would catch it anyway, but that's
 // not instant enough for the "M ctrl+s" feedback loop.
-func (a *app) onMergeSubmitted(msg mergeSubmittedMsg) tea.Cmd {
-	if msg.err != nil {
-		a.status.msg = "merge: " + msg.err.Error()
+func (a *app) onMergeSubmitted(msg merge.SubmittedMsg) tea.Cmd {
+	if msg.Err != nil {
+		a.status.msg = "merge: " + msg.Err.Error()
 		return nil
 	}
-	a.status.msg = fmt.Sprintf("merged: %s on %s#%d", msg.method, msg.repo, msg.prNum)
-	key := brain.PRKey(msg.repo, msg.prNum)
+	a.status.msg = fmt.Sprintf("merged: %s on %s#%d", msg.Method, msg.Repo, msg.PRNum)
+	key := brain.PRKey(msg.Repo, msg.PRNum)
 	a.cache.dropPR(key)
 	delete(a.session.pinnedAttention, key)
 	a.rebuildPRs()
@@ -787,10 +772,10 @@ func (a *app) onCommentsLoaded(msg commentsLoadedMsg) tea.Cmd {
 		return nil
 	}
 	a.cache.prComments[brain.PRKey(msg.repo, msg.prNum)] = msg.comments
-	if a.layout.activeView == viewComments {
+	if a.layout.activeView == router.RouteComments {
 		a.rebuildComments()
 	}
-	if a.layout.activeView == viewDiff && a.session.selectedPR != nil &&
+	if a.layout.activeView == router.RouteDiff && a.session.selectedPR != nil &&
 		a.session.selectedPR.Repo == msg.repo && a.session.selectedPR.Number == msg.prNum {
 		a.diff.RefreshGHInline(msg.comments)
 	}
@@ -818,7 +803,7 @@ func (a *app) onPollTick(msg pollTickMsg) tea.Cmd {
 	if msg.gen != a.status.pollGen || a.session.selectedPR == nil {
 		return nil
 	}
-	if a.layout.activeView == viewDiff && a.session.selectedFile != "" {
+	if a.layout.activeView == router.RouteDiff && a.session.selectedFile != "" {
 		a.diff.RefreshFromBrain(a.brain)
 	}
 

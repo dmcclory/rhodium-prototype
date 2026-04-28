@@ -3,6 +3,7 @@ package rhodium
 import (
 	"rhodium/internal/brain"
 	"rhodium/internal/gh"
+	"rhodium/internal/tui/router"
 )
 
 // cache holds data fetched from GitHub, denormalized for the views to read.
@@ -69,7 +70,7 @@ type session struct {
 	selectedPR      *gh.PR
 	selectedFile    string
 	review          *brain.ReviewSession
-	listOrigin      view // viewTodo or viewPRs — where to return from files
+	listOrigin      router.Route // RouteTodo or RoutePRs — where to return from files
 	pinnedAttention map[string]bool
 }
 
@@ -88,7 +89,7 @@ func (s *session) isPinnedAttention(key string) bool { return s.pinnedAttention[
 // layout holds terminal viewport state and which view currently has focus.
 type layout struct {
 	width, height int
-	activeView    view
+	activeView    router.Route
 }
 
 // setSize records a new terminal size. Callers are responsible for
@@ -96,7 +97,7 @@ type layout struct {
 func (l *layout) setSize(w, h int) { l.width, l.height = w, h }
 
 // focus switches the active view.
-func (l *layout) focus(v view) { l.activeView = v }
+func (l *layout) focus(r router.Route) { l.activeView = r }
 
 // status carries transient UI feedback and the polling generation counter.
 // pollGen lives here because it's effectively part of the same "things

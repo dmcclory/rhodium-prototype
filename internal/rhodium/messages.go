@@ -89,26 +89,6 @@ type notePublishedMsg struct {
 	err    error
 }
 
-// reviewSubmittedMsg lands back on the update loop after gh.SubmitReview
-// returns. event echoes what we asked for (for the status line); err is
-// nil on success.
-type reviewSubmittedMsg struct {
-	repo  string
-	prNum int
-	event gh.ReviewEvent
-	err   error
-}
-
-// mergeSubmittedMsg lands back on the update loop after gh.MergePR returns.
-// The PR is not removed from allPRs here — the next repo refresh drops it
-// when GitHub stops listing it as open.
-type mergeSubmittedMsg struct {
-	repo   string
-	prNum  int
-	method gh.MergeMethod
-	err    error
-}
-
 // contributorsLoadedMsg lands back on the update loop after a contributors
 // fetch completes. Results are cached on *app keyed by repo.
 type contributorsLoadedMsg struct {
