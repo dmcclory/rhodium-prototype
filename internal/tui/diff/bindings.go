@@ -44,7 +44,18 @@ func (m *Model) Bindings() []keys.Binding {
 // shape/desc strings matter; binding actions only fire from dispatch
 // where brain is supplied.
 func (m *Model) bindings(b Brain) []keys.Binding {
-	return append([]keys.Binding{
+	out := make([]keys.Binding, 0, 16)
+	out = append(out, m.navBindings()...)
+	out = append(out, m.markBindings(b)...)
+	out = append(out, m.noteBindings()...)
+	out = append(out, m.viewBindings(b)...)
+	out = append(out, m.AgentBindings...)
+	return out
+}
+
+// navBindings: cursor + hunk movement, back, advance.
+func (m *Model) navBindings() []keys.Binding {
+	return []keys.Binding{
 		{
 			Name: "back", Keys: []string{"esc", "h", "left"},
 			Desc: "back to files", Group: "Navigate",
@@ -92,172 +103,203 @@ func (m *Model) bindings(b Brain) []keys.Binding {
 				return nil
 			},
 		},
+	}
+}
+
+// markBindings: toggle / mark-all / unmark-all on hunks.
+func (m *Model) markBindings(b Brain) []keys.Binding {
+	return []keys.Binding{
 		{
 			Name: "toggle-mark", Keys: []string{" ", "x"},
 			Desc: "toggle hunk + advance", Group: "Mark",
-			Action: func() tea.Cmd {
-				if m.hunkIdx < 0 || m.hunkIdx >= len(m.hunks) {
-					return nil
-				}
-				h := m.hunks[m.hunkIdx]
-				if !h.IsMarkable() {
-					// Cursor is on a synthetic segment header — just advance.
-					m.stepHunk(1)
-					m.redraw()
-					m.jumpToHunk()
-					return nil
-				}
-				if m.marks == nil {
-					m.marks = map[string]bool{}
-				}
-				if m.marks[h.Hash] {
-					delete(m.marks, h.Hash)
-				} else {
-					m.marks[h.Hash] = true
-				}
-				cmd := m.saveMarks(b)
-				m.stepHunk(1)
-				m.redraw()
-				m.jumpToHunk()
-				return cmd
-			},
+			Action: func() tea.Cmd { return m.toggleMarkAtCursor(b) },
 		},
 		{
 			Name: "mark-all", Keys: []string{"m"},
 			Desc: "mark every hunk", Group: "Mark",
-			Action: func() tea.Cmd {
-				if m.marks == nil {
-					m.marks = map[string]bool{}
-				}
-				for _, h := range m.hunks {
-					if !h.IsMarkable() {
-						continue
-					}
-					m.marks[h.Hash] = true
-				}
-				cmd := m.saveMarks(b)
-				m.redraw()
-				m.jumpToHunk()
-				return cmd
-			},
+			Action: func() tea.Cmd { return m.markAll(b) },
 		},
 		{
 			Name: "unmark-all", Keys: []string{"u"},
 			Desc: "clear marks on file", Group: "Mark",
-			Action: func() tea.Cmd {
-				m.marks = map[string]bool{}
-				saveCmd := m.saveMarks(b)
-				m.redraw()
-				m.hunkIdx = 0
-				m.jumpToHunk()
-				path := m.file
-				return tea.Batch(saveCmd, statusCmd("cleared marks on "+path))
-			},
+			Action: func() tea.Cmd { return m.unmarkAll(b) },
 		},
+	}
+}
+
+// noteBindings: publish to GitHub, add at cursor.
+func (m *Model) noteBindings() []keys.Binding {
+	return []keys.Binding{
 		{
 			Name: "publish-note", Keys: []string{"P"},
 			Desc: "publish note at cursor to GitHub", Group: "Notes",
-			Action: func() tea.Cmd {
-				return m.publishNoteAtCursor()
-			},
+			Action: func() tea.Cmd { return m.publishNoteAtCursor() },
 		},
 		{
 			Name: "note", Keys: []string{"c"},
 			Desc: "add note at cursor", Group: "Notes",
-			Action: func() tea.Cmd {
-				// In segmented mode, notes key off new-file (F2) line numbers
-				// — segments rendered under any other view (b1→b2, f1→f2,
-				// etc.) don't have a clean F2 mapping, so block them. Most
-				// primary views do end at F2; this is only a limitation for
-				// a handful of classes.
-				if view, ok := m.currentSegmentView(); ok && view.To != corediff.F2 {
-					return statusCmd(fmt.Sprintf("notes are only supported on F2 views (this segment: %s→%s)", view.From, view.To))
-				}
-				lineNo := m.cursorFileLine()
-				if lineNo == 0 {
-					return statusCmd("cursor not on a file line")
-				}
-				m.noting = true
-				m.noteLineNo = lineNo
-				m.noteLineHash = m.cursorLineHash(lineNo)
-				m.noteInput.Reset()
-				return m.noteInput.Focus()
-			},
+			Action: func() tea.Cmd { return m.startNoteAtCursor() },
 		},
+	}
+}
+
+// viewBindings: cycle segment, catch-up toggle, open-editor.
+func (m *Model) viewBindings(b Brain) []keys.Binding {
+	return []keys.Binding{
 		{
 			Name: "cycle-view", Keys: []string{"v"},
 			Desc: "cycle segment view", Group: "View",
-			Action: func() tea.Cmd {
-				if !m.segmented || len(m.segments) == 0 {
-					return nil
-				}
-				if corediff.MaxSegmentViews(m.segments) <= 1 {
-					return statusCmd("no alternate views for these segments")
-				}
-				m.segmentViewIdx++
-				m.hunks = corediff.SegmentHunks(m.segments, m.segmentViewIdx)
-				m.hunkIdx = firstUnmarked(m.hunks, m.marks)
-				m.cursorLine = 0
-				maxV := corediff.MaxSegmentViews(m.segments)
-				m.redraw()
-				m.jumpToHunk()
-				return statusCmd(fmt.Sprintf("view %d/%d", (m.segmentViewIdx%maxV)+1, maxV))
-			},
+			Action: func() tea.Cmd { return m.cycleSegmentView() },
 		},
 		{
 			Name: "catch-up-toggle", Keys: []string{"d"},
 			Desc: "toggle catch-up / full diff", Group: "View",
-			Action: func() tea.Cmd {
-				if m.catchUpOldHead == "" || m.pr == nil {
-					return nil
-				}
-				if m.catchUpMode {
-					m.catchUpMode = false
-					m.segmented = false
-					m.hunks = corediff.ParseHunks(m.fullPatch)
-					m.marks = b.HunkMarks(m.pr.Repo, m.pr.Number, m.file)
-					m.hunkIdx = firstUnmarked(m.hunks, m.marks)
-					m.redraw()
-					m.jumpToHunk()
-					return statusCmd("full diff  (d: catch-up diff)")
-				}
-				m.catchUpMode = true
-				var status string
-				if len(m.segments) > 0 {
-					m.hunks = corediff.SegmentHunks(m.segments, m.segmentViewIdx)
-					m.segmented = true
-					status = fmt.Sprintf("catch-up [%s]: %d segments since %s  (d: full diff)", m.catchUpClass, len(m.segments), shortSHA(m.catchUpOldHead))
-				} else {
-					m.hunks = corediff.ParseHunks(m.catchUpPatch)
-					m.segmented = false
-					status = fmt.Sprintf("catch-up [%s]: changes since %s  (d: full diff)", m.catchUpClass, shortSHA(m.catchUpOldHead))
-				}
-				m.marks = b.HunkMarks(m.pr.Repo, m.pr.Number, m.file)
-				m.hunkIdx = firstUnmarked(m.hunks, m.marks)
-				m.redraw()
-				m.jumpToHunk()
-				return statusCmd(status)
-			},
+			Action: func() tea.Cmd { return m.toggleCatchUp(b) },
 		},
 		{
 			Name: "open-editor", Keys: []string{"o"},
 			Desc: "open file in editor", Group: "View",
-			Action: func() tea.Cmd {
-				if m.pr == nil || m.file == "" {
-					return nil
-				}
-				line := 1
-				if m.hunkIdx >= 0 && m.hunkIdx < len(m.hunks) {
-					if _, n := hunkLines(m.hunks[m.hunkIdx].Header); n > 0 {
-						line = n
-					}
-				}
-				pr := *m.pr
-				file := m.file
-				return func() tea.Msg { return OpenEditorMsg{PR: pr, File: file, Line: line} }
-			},
+			Action: func() tea.Cmd { return m.emitOpenEditor() },
 		},
-	}, m.AgentBindings...)
+	}
+}
+
+// --- action helpers ---
+
+func (m *Model) toggleMarkAtCursor(b Brain) tea.Cmd {
+	if m.hunkIdx < 0 || m.hunkIdx >= len(m.hunks) {
+		return nil
+	}
+	h := m.hunks[m.hunkIdx]
+	if !h.IsMarkable() {
+		// Cursor is on a synthetic segment header — just advance.
+		m.stepHunk(1)
+		m.redraw()
+		m.jumpToHunk()
+		return nil
+	}
+	if m.marks == nil {
+		m.marks = map[string]bool{}
+	}
+	if m.marks[h.Hash] {
+		delete(m.marks, h.Hash)
+	} else {
+		m.marks[h.Hash] = true
+	}
+	cmd := m.saveMarks(b)
+	m.stepHunk(1)
+	m.redraw()
+	m.jumpToHunk()
+	return cmd
+}
+
+func (m *Model) markAll(b Brain) tea.Cmd {
+	if m.marks == nil {
+		m.marks = map[string]bool{}
+	}
+	for _, h := range m.hunks {
+		if !h.IsMarkable() {
+			continue
+		}
+		m.marks[h.Hash] = true
+	}
+	cmd := m.saveMarks(b)
+	m.redraw()
+	m.jumpToHunk()
+	return cmd
+}
+
+func (m *Model) unmarkAll(b Brain) tea.Cmd {
+	m.marks = map[string]bool{}
+	saveCmd := m.saveMarks(b)
+	m.redraw()
+	m.hunkIdx = 0
+	m.jumpToHunk()
+	path := m.file
+	return tea.Batch(saveCmd, statusCmd("cleared marks on "+path))
+}
+
+func (m *Model) startNoteAtCursor() tea.Cmd {
+	// In segmented mode, notes key off new-file (F2) line numbers
+	// — segments rendered under any other view (b1→b2, f1→f2, etc.)
+	// don't have a clean F2 mapping, so block them. Most primary views
+	// do end at F2; this is only a limitation for a handful of classes.
+	if view, ok := m.currentSegmentView(); ok && view.To != corediff.F2 {
+		return statusCmd(fmt.Sprintf("notes are only supported on F2 views (this segment: %s→%s)", view.From, view.To))
+	}
+	lineNo := m.cursorFileLine()
+	if lineNo == 0 {
+		return statusCmd("cursor not on a file line")
+	}
+	m.noting = true
+	m.noteLineNo = lineNo
+	m.noteLineHash = m.cursorLineHash(lineNo)
+	m.noteInput.Reset()
+	return m.noteInput.Focus()
+}
+
+func (m *Model) cycleSegmentView() tea.Cmd {
+	if !m.segmented || len(m.segments) == 0 {
+		return nil
+	}
+	if corediff.MaxSegmentViews(m.segments) <= 1 {
+		return statusCmd("no alternate views for these segments")
+	}
+	m.segmentViewIdx++
+	m.hunks = corediff.SegmentHunks(m.segments, m.segmentViewIdx)
+	m.hunkIdx = firstUnmarked(m.hunks, m.marks)
+	m.cursorLine = 0
+	maxV := corediff.MaxSegmentViews(m.segments)
+	m.redraw()
+	m.jumpToHunk()
+	return statusCmd(fmt.Sprintf("view %d/%d", (m.segmentViewIdx%maxV)+1, maxV))
+}
+
+func (m *Model) toggleCatchUp(b Brain) tea.Cmd {
+	if m.catchUpOldHead == "" || m.pr == nil {
+		return nil
+	}
+	if m.catchUpMode {
+		m.catchUpMode = false
+		m.segmented = false
+		m.hunks = corediff.ParseHunks(m.fullPatch)
+		m.marks = b.HunkMarks(m.pr.Repo, m.pr.Number, m.file)
+		m.hunkIdx = firstUnmarked(m.hunks, m.marks)
+		m.redraw()
+		m.jumpToHunk()
+		return statusCmd("full diff  (d: catch-up diff)")
+	}
+	m.catchUpMode = true
+	var status string
+	if len(m.segments) > 0 {
+		m.hunks = corediff.SegmentHunks(m.segments, m.segmentViewIdx)
+		m.segmented = true
+		status = fmt.Sprintf("catch-up [%s]: %d segments since %s  (d: full diff)", m.catchUpClass, len(m.segments), shortSHA(m.catchUpOldHead))
+	} else {
+		m.hunks = corediff.ParseHunks(m.catchUpPatch)
+		m.segmented = false
+		status = fmt.Sprintf("catch-up [%s]: changes since %s  (d: full diff)", m.catchUpClass, shortSHA(m.catchUpOldHead))
+	}
+	m.marks = b.HunkMarks(m.pr.Repo, m.pr.Number, m.file)
+	m.hunkIdx = firstUnmarked(m.hunks, m.marks)
+	m.redraw()
+	m.jumpToHunk()
+	return statusCmd(status)
+}
+
+func (m *Model) emitOpenEditor() tea.Cmd {
+	if m.pr == nil || m.file == "" {
+		return nil
+	}
+	line := 1
+	if m.hunkIdx >= 0 && m.hunkIdx < len(m.hunks) {
+		if _, n := hunkLines(m.hunks[m.hunkIdx].Header); n > 0 {
+			line = n
+		}
+	}
+	pr := *m.pr
+	file := m.file
+	return func() tea.Msg { return OpenEditorMsg{PR: pr, File: file, Line: line} }
 }
 
 // notingBindings are display-only entries shown in the help overlay while

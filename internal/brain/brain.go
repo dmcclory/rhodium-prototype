@@ -381,6 +381,12 @@ type BrainMigrationStatus struct {
 	Pending bool   `json:"pending"`
 }
 
+// embeddedMigration is one .sql file in the embedded migrations FS.
+type embeddedMigration struct {
+	version int64
+	file    string
+}
+
 func InspectBrain() (BrainStatus, error) {
 	path, err := brainPath()
 	if err != nil {
@@ -388,34 +394,12 @@ func InspectBrain() (BrainStatus, error) {
 	}
 	status := BrainStatus{Path: path}
 
-	entries, err := migrations.FS.ReadDir(".")
+	embeds, maxEmbedded, err := scanEmbeddedMigrations()
 	if err != nil {
 		return status, err
 	}
-	type embedded struct {
-		version int64
-		file    string
-	}
-	var embeds []embedded
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".sql") {
-			continue
-		}
-		us := strings.IndexByte(name, '_')
-		if us <= 0 {
-			continue
-		}
-		v, err := strconv.ParseInt(name[:us], 10, 64)
-		if err != nil {
-			continue
-		}
-		embeds = append(embeds, embedded{version: v, file: name})
-		if v > status.MaxEmbedded {
-			status.MaxEmbedded = v
-		}
-	}
 	status.EmbeddedCount = len(embeds)
+	status.MaxEmbedded = maxEmbedded
 
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
@@ -431,7 +415,6 @@ func InspectBrain() (BrainStatus, error) {
 	}
 	defer db.Close()
 
-	applied := map[int64]bool{}
 	status.CurrentVersion, err = currentBrainVersion(db)
 	if err != nil {
 		return status, err
@@ -440,6 +423,7 @@ func InspectBrain() (BrainStatus, error) {
 	if err != nil {
 		return status, err
 	}
+	applied := map[int64]bool{}
 	for _, v := range versions {
 		applied[v] = true
 	}
@@ -456,39 +440,97 @@ func InspectBrain() (BrainStatus, error) {
 	}
 	status.Ahead = status.CurrentVersion > status.MaxEmbedded
 
+	mismatches, err := migrationHashMismatches(db, versions)
+	if err != nil {
+		return status, err
+	}
+	status.HashMismatches = mismatches
+
+	status.Backups = findBrainBackups(path)
+	return status, nil
+}
+
+// scanEmbeddedMigrations enumerates the *.sql files in migrations.FS and
+// returns them sorted by name plus the highest version number found.
+// Files without a leading "<n>_" prefix are skipped silently.
+func scanEmbeddedMigrations() ([]embeddedMigration, int64, error) {
+	entries, err := migrations.FS.ReadDir(".")
+	if err != nil {
+		return nil, 0, err
+	}
+	var embeds []embeddedMigration
+	var maxEmbedded int64
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".sql") {
+			continue
+		}
+		us := strings.IndexByte(name, '_')
+		if us <= 0 {
+			continue
+		}
+		v, err := strconv.ParseInt(name[:us], 10, 64)
+		if err != nil {
+			continue
+		}
+		embeds = append(embeds, embeddedMigration{version: v, file: name})
+		if v > maxEmbedded {
+			maxEmbedded = v
+		}
+	}
+	return embeds, maxEmbedded, nil
+}
+
+// migrationHashMismatches compares stored migration content hashes
+// against the on-disk files for each applied version. A mismatch means
+// the migration source has been edited after it was applied — a
+// developer error worth flagging in `brain status` output.
+//
+// Returns nil mismatches (not an error) if the hash table doesn't exist
+// yet — older databases predate it and have nothing to compare.
+func migrationHashMismatches(db *sql.DB, versions []int64) ([]BrainMigrationStatus, error) {
 	var hasHashTable int
 	_ = db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='brain_migration_hashes'`).Scan(&hasHashTable)
-	if hasHashTable != 0 {
-		for _, v := range versions {
-			file, disk, err := migrationFileAndHash(v)
-			if err != nil {
-				return status, err
-			}
-			if file == "" {
-				continue
-			}
-			var stored sql.NullString
-			if err := db.QueryRow(`SELECT sha256 FROM brain_migration_hashes WHERE version_id = ?`, v).Scan(&stored); err != nil && err != sql.ErrNoRows {
-				return status, err
-			}
-			if stored.Valid && stored.String != disk {
-				status.HashMismatches = append(status.HashMismatches, BrainMigrationStatus{Version: v, File: file})
-			}
+	if hasHashTable == 0 {
+		return nil, nil
+	}
+	var mismatches []BrainMigrationStatus
+	for _, v := range versions {
+		file, disk, err := migrationFileAndHash(v)
+		if err != nil {
+			return nil, err
+		}
+		if file == "" {
+			continue
+		}
+		var stored sql.NullString
+		if err := db.QueryRow(`SELECT sha256 FROM brain_migration_hashes WHERE version_id = ?`, v).Scan(&stored); err != nil && err != sql.ErrNoRows {
+			return nil, err
+		}
+		if stored.Valid && stored.String != disk {
+			mismatches = append(mismatches, BrainMigrationStatus{Version: v, File: file})
 		}
 	}
+	return mismatches, nil
+}
 
+// findBrainBackups returns the .bak-v* sibling files alongside the brain
+// db. Best-effort: returns nil on any read error.
+func findBrainBackups(path string) []string {
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
-	if dirEntries, err := os.ReadDir(dir); err == nil {
-		for _, e := range dirEntries {
-			name := e.Name()
-			if strings.HasPrefix(name, base+".bak-v") {
-				status.Backups = append(status.Backups, filepath.Join(dir, name))
-			}
+	dirEntries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var backups []string
+	for _, e := range dirEntries {
+		name := e.Name()
+		if strings.HasPrefix(name, base+".bak-v") {
+			backups = append(backups, filepath.Join(dir, name))
 		}
 	}
-
-	return status, nil
+	return backups
 }
 
 func (b *Brain) CachedPRs() []gh.PR {

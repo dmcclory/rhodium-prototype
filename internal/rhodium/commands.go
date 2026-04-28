@@ -61,34 +61,7 @@ func autoAdvanceCmd(b *brain.Brain, pr gh.PR, files []gh.FileChange) tea.Cmd {
 			return autoAdvanceMsg{prKey: brain.PRKey(pr.Repo, pr.Number)}
 		}
 
-		// Index current files by path for O(1) forget-detection.
-		currentByPath := make(map[string]gh.FileChange, len(files))
-		for _, fc := range files {
-			currentByPath[fc.Path] = fc
-		}
-
-		// Partition reviewed files into three buckets:
-		//   alreadyCurrent: s.HeadSHA == pr.HeadSHA && s.BaseSHA == pr.BaseSHA
-		//     → nothing to do, not a catch-up candidate.
-		//   forgotten:     path not in currentByPath
-		//     → auto-advance with an advanceForget reason.
-		//   drifted:       SHAs moved since last review
-		//     → evaluate via decideAdvance (may need a content fetch).
-		var drifted []gh.FileChange
-		var forgotten []string
-		for path, s := range states {
-			if s.HeadSHA == "" {
-				continue
-			}
-			if fc, ok := currentByPath[path]; ok {
-				if s.HeadSHA == pr.HeadSHA && s.BaseSHA == pr.BaseSHA {
-					continue
-				}
-				drifted = append(drifted, fc)
-			} else {
-				forgotten = append(forgotten, path)
-			}
-		}
+		drifted, forgotten := partitionReviewedFiles(states, files, pr)
 
 		// Probe the drifted bucket. `unresolvedPaths` are the ones that
 		// neither local-marks nor rev-update could advance — these still
@@ -106,47 +79,81 @@ func autoAdvanceCmd(b *brain.Brain, pr gh.PR, files []gh.FileChange) tea.Cmd {
 		}
 		advanced = append(advanced, forgotten...)
 
-		// Snapshot a review session for the still-unresolved files so their
-		// path list is stable even if the PR moves mid-review. Files that
-		// we're about to silently advance below don't need the reviewer
-		// and aren't part of the session.
-		if len(unresolvedPaths) > 0 {
-			existing := b.ActiveSession(pr.Repo, pr.Number)
-			if existing == nil || existing.GoalHead != pr.HeadSHA || existing.GoalBase != pr.BaseSHA {
-				var oldHead, oldBase string
-				for _, s := range states {
-					if s.HeadSHA != "" {
-						oldHead = s.HeadSHA
-						oldBase = s.BaseSHA
-						break
-					}
-				}
-				sessionFiles := make([]brain.SessionFile, 0, len(unresolvedPaths))
-				for _, p := range unresolvedPaths {
-					sessionFiles = append(sessionFiles, brain.SessionFile{Path: p})
-				}
-				b.CreateSession(pr.Repo, pr.Number, oldHead, oldBase, pr.HeadSHA, pr.BaseSHA, sessionFiles)
-			}
-		}
-
-		// Commit advances. If a silently-advanced path is in the active
-		// session (e.g. a prior session already covered it), mark it done
-		// there too so the counter stays consistent with file_reviews.
-		session := b.ActiveSession(pr.Repo, pr.Number)
-		sessionPaths := map[string]bool{}
-		if session != nil {
-			for _, sf := range b.SessionFiles(session.ID) {
-				sessionPaths[sf.Path] = true
-			}
-		}
-		for _, path := range advanced {
-			b.SetFileReviewed(pr.Repo, pr.Number, path, pr.HeadSHA, pr.BaseSHA)
-			if session != nil && sessionPaths[path] {
-				b.SetSessionFileDone(session.ID, path, true)
-			}
-		}
+		ensureCatchUpSession(b, pr, states, unresolvedPaths)
+		commitAdvances(b, pr, advanced)
 
 		return autoAdvanceMsg{prKey: brain.PRKey(pr.Repo, pr.Number), advancedFiles: advanced}
+	}
+}
+
+// partitionReviewedFiles classifies each reviewed file into one of three
+// states: still on the current head (skipped), forgotten (path no longer
+// in the PR — silently advance), or drifted (SHAs moved — needs probing).
+// Returns the drifted FileChanges + forgotten paths.
+func partitionReviewedFiles(states map[string]brain.FileReviewState, files []gh.FileChange, pr gh.PR) (drifted []gh.FileChange, forgotten []string) {
+	currentByPath := make(map[string]gh.FileChange, len(files))
+	for _, fc := range files {
+		currentByPath[fc.Path] = fc
+	}
+	for path, s := range states {
+		if s.HeadSHA == "" {
+			continue
+		}
+		if fc, ok := currentByPath[path]; ok {
+			if s.HeadSHA == pr.HeadSHA && s.BaseSHA == pr.BaseSHA {
+				continue
+			}
+			drifted = append(drifted, fc)
+		} else {
+			forgotten = append(forgotten, path)
+		}
+	}
+	return drifted, forgotten
+}
+
+// ensureCatchUpSession snapshots a review session over the still-
+// unresolved files so their path list is stable even if the PR moves
+// mid-review. No-op if there's already an active session pointing at
+// the same goal SHAs, or if there's nothing left to review.
+func ensureCatchUpSession(b *brain.Brain, pr gh.PR, states map[string]brain.FileReviewState, unresolvedPaths []string) {
+	if len(unresolvedPaths) == 0 {
+		return
+	}
+	existing := b.ActiveSession(pr.Repo, pr.Number)
+	if existing != nil && existing.GoalHead == pr.HeadSHA && existing.GoalBase == pr.BaseSHA {
+		return
+	}
+	var oldHead, oldBase string
+	for _, s := range states {
+		if s.HeadSHA != "" {
+			oldHead = s.HeadSHA
+			oldBase = s.BaseSHA
+			break
+		}
+	}
+	sessionFiles := make([]brain.SessionFile, 0, len(unresolvedPaths))
+	for _, p := range unresolvedPaths {
+		sessionFiles = append(sessionFiles, brain.SessionFile{Path: p})
+	}
+	b.CreateSession(pr.Repo, pr.Number, oldHead, oldBase, pr.HeadSHA, pr.BaseSHA, sessionFiles)
+}
+
+// commitAdvances writes the file_reviews row for each advanced path,
+// and also marks the path done within the active session if it was
+// part of one — keeps the session counter consistent with file_reviews.
+func commitAdvances(b *brain.Brain, pr gh.PR, advanced []string) {
+	session := b.ActiveSession(pr.Repo, pr.Number)
+	sessionPaths := map[string]bool{}
+	if session != nil {
+		for _, sf := range b.SessionFiles(session.ID) {
+			sessionPaths[sf.Path] = true
+		}
+	}
+	for _, path := range advanced {
+		b.SetFileReviewed(pr.Repo, pr.Number, path, pr.HeadSHA, pr.BaseSHA)
+		if session != nil && sessionPaths[path] {
+			b.SetSessionFileDone(session.ID, path, true)
+		}
 	}
 }
 

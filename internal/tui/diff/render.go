@@ -195,105 +195,149 @@ func colorDiffLine(line string) string {
 // deletions red. Hunk headers with mark indicators are shown at each
 // change boundary.
 func renderFullFile(fileContent string, hunks []corediff.Hunk, marks map[string]bool, focusedIdx int, notes []brain.Note, ghInline []gh.Comment, cursorLine int) (string, []int, []int) {
-	byLine := notesByLine(notes)
-	ghByLine := ghInlineByLine(ghInline, notes)
-	fileLines := strings.Split(fileContent, "\n")
-	if len(fileLines) > 0 && fileLines[len(fileLines)-1] == "" {
-		fileLines = fileLines[:len(fileLines)-1]
+	fileLines := splitFileLines(fileContent)
+	parsed := parseHunksWithRanges(hunks)
+
+	fb := &fullFileBuilder{
+		byLine:     notesByLine(notes),
+		ghByLine:   ghInlineByLine(ghInline, notes),
+		gutterW:    len(fmt.Sprintf("%d", len(fileLines)+100)),
+		cursorLine: cursorLine,
+	}
+	hunkLineOffsets := make([]int, len(hunks))
+	newFileLine := 1
+
+	for hi, ph := range parsed {
+		// Emit unchanged context before this hunk.
+		for newFileLine < ph.r.newStart && newFileLine-1 < len(fileLines) {
+			fb.writeLine(newFileLine, fileLines[newFileLine-1])
+			fb.emitNotes(newFileLine)
+			newFileLine++
+		}
+		hunkLineOffsets[hi] = fb.outputLine
+		fb.writeUnnum(formatHunkHeader(ph.Hunk, marks, hi == focusedIdx))
+		newFileLine = fb.emitHunkBody(ph.BodyLines, newFileLine)
 	}
 
-	type parsedHunk struct {
-		corediff.Hunk
-		r hunkRange
+	// Trailing context after the last hunk.
+	for newFileLine-1 < len(fileLines) {
+		fb.writeLine(newFileLine, fileLines[newFileLine-1])
+		fb.emitNotes(newFileLine)
+		newFileLine++
 	}
+
+	return fb.b.String(), hunkLineOffsets, fb.lineMap
+}
+
+// splitFileLines splits the raw file content into a 0-indexed slice of
+// lines, trimming the trailing empty string that strings.Split produces
+// for content ending with a newline.
+func splitFileLines(fileContent string) []string {
+	lines := strings.Split(fileContent, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+// parsedHunk attaches the parsed @@ header range to the corediff.Hunk so
+// downstream code doesn't re-parse it.
+type parsedHunk struct {
+	corediff.Hunk
+	r hunkRange
+}
+
+func parseHunksWithRanges(hunks []corediff.Hunk) []parsedHunk {
 	parsed := make([]parsedHunk, len(hunks))
 	for i, h := range hunks {
 		parsed[i] = parsedHunk{Hunk: h, r: parseHunkRange(h.Header)}
 	}
+	return parsed
+}
 
-	var b strings.Builder
-	var lineMap []int
-	hunkLineOffsets := make([]int, len(hunks))
-	outputLine := 0
-	newFileLine := 1
-	gutterW := len(fmt.Sprintf("%d", len(fileLines)+100))
+func formatHunkHeader(h corediff.Hunk, marks map[string]bool, focused bool) string {
+	mark := "[ ]"
+	if marks[h.Hash] {
+		mark = markedStyle.Render("[✓]")
+	}
+	headerLine := mark + " " + h.Header
+	if focused {
+		headerLine = focusedHunkStyle.Render(headerLine)
+	}
+	return headerLine
+}
 
-	writeLine := func(num int, text string) {
-		prefix := ""
-		if outputLine == cursorLine {
-			prefix = cursorIndicator
-		}
-		gutter := lineNumStyle.Render(fmt.Sprintf("%*d", gutterW, num))
-		b.WriteString(prefix + gutter + "  " + text + "\n")
-		lineMap = append(lineMap, num)
-		outputLine++
-	}
-	writeUnnum := func(text string) {
-		pad := strings.Repeat(" ", gutterW)
-		b.WriteString(pad + "  " + text + "\n")
-		lineMap = append(lineMap, 0)
-		outputLine++
-	}
-	emitNotes := func(fileLineNo int) {
-		if ln, ok := byLine[fileLineNo]; ok {
-			renderNoteLines(&b, ln, &outputLine, &lineMap)
-		}
-		if gl, ok := ghByLine[fileLineNo]; ok {
-			renderGHInlineLines(&b, gl, &outputLine, &lineMap)
-		}
-	}
+// fullFileBuilder owns the streaming output state for renderFullFile —
+// the strings.Builder, the running output line index, and the line map.
+// Exposing the streaming primitives as methods keeps the orchestrator
+// readable and lets the per-hunk loop reuse them without juggling
+// pointer args.
+type fullFileBuilder struct {
+	b          strings.Builder
+	lineMap    []int
+	outputLine int
+	gutterW    int
+	cursorLine int
+	byLine     map[int][]brain.Note
+	ghByLine   map[int][]gh.Comment
+}
 
-	for hi, ph := range parsed {
-		for newFileLine < ph.r.newStart && newFileLine-1 < len(fileLines) {
-			writeLine(newFileLine, fileLines[newFileLine-1])
-			emitNotes(newFileLine)
+func (f *fullFileBuilder) writeLine(num int, text string) {
+	prefix := ""
+	if f.outputLine == f.cursorLine {
+		prefix = cursorIndicator
+	}
+	gutter := lineNumStyle.Render(fmt.Sprintf("%*d", f.gutterW, num))
+	f.b.WriteString(prefix + gutter + "  " + text + "\n")
+	f.lineMap = append(f.lineMap, num)
+	f.outputLine++
+}
+
+func (f *fullFileBuilder) writeUnnum(text string) {
+	pad := strings.Repeat(" ", f.gutterW)
+	f.b.WriteString(pad + "  " + text + "\n")
+	f.lineMap = append(f.lineMap, 0)
+	f.outputLine++
+}
+
+func (f *fullFileBuilder) emitNotes(fileLineNo int) {
+	if ln, ok := f.byLine[fileLineNo]; ok {
+		renderNoteLines(&f.b, ln, &f.outputLine, &f.lineMap)
+	}
+	if gl, ok := f.ghByLine[fileLineNo]; ok {
+		renderGHInlineLines(&f.b, gl, &f.outputLine, &f.lineMap)
+	}
+}
+
+// emitHunkBody walks one hunk's BodyLines, emitting +/-/context with
+// matching styles and notes. Returns the updated newFileLine cursor so
+// the orchestrator can continue with the post-hunk context.
+func (f *fullFileBuilder) emitHunkBody(bodyLines []string, newFileLine int) int {
+	for _, line := range bodyLines {
+		if len(line) == 0 {
+			f.writeLine(newFileLine, "")
+			f.emitNotes(newFileLine)
+			newFileLine++
+			continue
+		}
+		switch line[0] {
+		case '+':
+			f.writeLine(newFileLine, addedStyle.Render(line[1:]))
+			f.emitNotes(newFileLine)
+			newFileLine++
+		case '-':
+			f.writeUnnum(deletedStyle.Render(line))
+		default:
+			text := line
+			if len(text) > 0 && text[0] == ' ' {
+				text = text[1:]
+			}
+			f.writeLine(newFileLine, text)
+			f.emitNotes(newFileLine)
 			newFileLine++
 		}
-
-		mark := "[ ]"
-		if marks[ph.Hash] {
-			mark = markedStyle.Render("[✓]")
-		}
-		headerLine := mark + " " + ph.Header
-		if hi == focusedIdx {
-			headerLine = focusedHunkStyle.Render(headerLine)
-		}
-		hunkLineOffsets[hi] = outputLine
-		writeUnnum(headerLine)
-
-		for _, line := range ph.BodyLines {
-			if len(line) == 0 {
-				writeLine(newFileLine, "")
-				emitNotes(newFileLine)
-				newFileLine++
-				continue
-			}
-			switch line[0] {
-			case '+':
-				writeLine(newFileLine, addedStyle.Render(line[1:]))
-				emitNotes(newFileLine)
-				newFileLine++
-			case '-':
-				writeUnnum(deletedStyle.Render(line))
-			default:
-				text := line
-				if len(text) > 0 && text[0] == ' ' {
-					text = text[1:]
-				}
-				writeLine(newFileLine, text)
-				emitNotes(newFileLine)
-				newFileLine++
-			}
-		}
 	}
-
-	for newFileLine-1 < len(fileLines) {
-		writeLine(newFileLine, fileLines[newFileLine-1])
-		emitNotes(newFileLine)
-		newFileLine++
-	}
-
-	return b.String(), hunkLineOffsets, lineMap
+	return newFileLine
 }
 
 // ParseHunkRange exposes the internal hunk-range parser to the rhodium

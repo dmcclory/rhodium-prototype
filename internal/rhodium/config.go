@@ -209,7 +209,7 @@ func expandHome(p string) string {
 	return p
 }
 
-func loadConfig() (*Config, error) {
+func LoadConfig() (*Config, error) {
 	path := os.Getenv("RHODIUM_CONFIG")
 	if path == "" {
 		home, err := os.UserHomeDir()

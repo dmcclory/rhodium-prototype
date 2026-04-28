@@ -9,12 +9,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func Run(args []string) error {
-	if len(args) > 0 {
-		return runCLI(args)
-	}
-
-	cfg, err := loadConfig()
+// Run launches the TUI. Args dispatch (CLI vs TUI) lives in main; by the
+// time we get here the caller has already decided.
+func Run() error {
+	cfg, err := LoadConfig()
 	if err != nil {
 		return err
 	}

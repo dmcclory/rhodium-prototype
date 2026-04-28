@@ -1,4 +1,4 @@
-package rhodium
+package cli
 
 import (
 	"rhodium/internal/diff"
