@@ -5,6 +5,20 @@ CLI with a persistent "brain" of review state (hunk-level marks that
 survive rebases, per-file catch-up diffs, inline notes) that a reviewer
 can live in across many PRs and many sessions.
 
+## Install
+
+If you just want a working `rhodium` binary on your `$PATH`, the install
+script downloads the latest release, verifies its checksums, and drops
+the binary in `~/.rhodium/bin` (added to your shell's path):
+
+```
+gh api -H 'Accept: application/vnd.github.v3.raw' \
+  "repos/dmcclory/rhodium-prototype/contents/install.sh" | bash
+```
+
+Requires `gh` (and either `sha256sum` or `shasum` — macOS ships the
+latter). Open a new shell after install so the PATH update takes effect.
+
 ## Build
 
 ```
