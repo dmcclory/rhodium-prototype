@@ -824,6 +824,13 @@ func (a *app) onCommentsLoaded(msg commentsLoadedMsg) tea.Cmd {
 		return nil
 	}
 	a.cache.prComments[brain.PRKey(msg.repo, msg.prNum)] = msg.comments
+	go func() {
+		if _, err := a.brain.SyncGitHubComments(msg.repo, msg.prNum); err != nil {
+			// Silent — comments are already in-memory; the brain sync
+			// is best-effort and will retry on the next remote refresh.
+			_ = err
+		}
+	}()
 	if a.layout.activeView == router.RouteComments {
 		a.rebuildComments()
 	}

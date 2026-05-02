@@ -12,7 +12,7 @@ import (
 
 func cmdBrain(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: rhodium brain {status|log|show}")
+		return fmt.Errorf("usage: rhodium brain {status|log|show|sync-comments}")
 	}
 	switch args[0] {
 	case "status":
@@ -21,8 +21,10 @@ func cmdBrain(args []string) error {
 		return cmdBrainLog(args[1:])
 	case "show":
 		return cmdBrainShow(args[1:])
+	case "sync-comments":
+		return cmdBrainSyncComments(args[1:])
 	default:
-		return fmt.Errorf("unknown brain subcommand: %s (try 'status', 'log', or 'show')", args[0])
+		return fmt.Errorf("unknown brain subcommand: %s (try 'status', 'log', 'show', or 'sync-comments')", args[0])
 	}
 }
 
@@ -174,4 +176,60 @@ func compactJSON(raw string) string {
 		return raw
 	}
 	return string(buf)
+}
+
+func cmdBrainSyncComments(args []string) error {
+	flags, positional := splitFlags(args, "all")
+	fs := flag.NewFlagSet("brain sync-comments", flag.ContinueOnError)
+	allFlag := fs.Bool("all", false, "sync comments for all cached PRs")
+	if err := fs.Parse(flags); err != nil {
+		return err
+	}
+
+	b, err := brain.LoadBrain()
+	if err != nil {
+		return err
+	}
+	defer b.Close()
+
+	if *allFlag {
+		return cmdBrainSyncAllComments(b)
+	}
+
+	if len(positional) == 0 {
+		return fmt.Errorf("usage: rhodium brain sync-comments <owner/repo#N> [--all]")
+	}
+	repo, num, err := parsePRRef(positional[0])
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stderr, "syncing comments for %s#%d…\n", repo, num)
+	inserted, err := b.SyncGitHubComments(repo, num)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "done — %d new comments synced\n", inserted)
+	return nil
+}
+
+func cmdBrainSyncAllComments(b *brain.Brain) error {
+	prs := b.CachedPRs()
+	if len(prs) == 0 {
+		return fmt.Errorf("no PRs in brain cache — run `rhodium todo --sync` first")
+	}
+
+	total := 0
+	for _, pr := range prs {
+		fmt.Fprintf(os.Stderr, "syncing %s#%d… ", pr.Repo, pr.Number)
+		n, err := b.SyncGitHubComments(pr.Repo, pr.Number)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "%d new\n", n)
+		total += n
+	}
+	fmt.Fprintf(os.Stderr, "done — %d total comments synced across %d PRs\n", total, len(prs))
+	return nil
 }
