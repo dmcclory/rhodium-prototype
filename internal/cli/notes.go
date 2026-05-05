@@ -61,7 +61,12 @@ func cmdNotes(args []string) error {
 		if n.ResolvedAt != "" {
 			marker = " ✓ resolved " + n.ResolvedAt
 		}
-		fmt.Printf("  [#%d] line %d  (%s)%s\n", n.ID, n.LineNo, n.CreatedAt, marker)
+		urg := urgencyGlyph(n)
+		assignee := ""
+		if n.Assignee != "" {
+			assignee = " [" + n.Assignee + "]"
+		}
+		fmt.Printf("  [#%d] %sline %d  (%s)%s%s\n", n.ID, urg, n.LineNo, n.CreatedAt, marker, assignee)
 		for _, bl := range strings.Split(strings.TrimRight(n.Body, "\n"), "\n") {
 			fmt.Printf("    %s\n", bl)
 		}

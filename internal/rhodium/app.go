@@ -500,6 +500,7 @@ func (a *app) buildTodoItem(pr gh.PR) *todo.Item {
 		return nil
 	}
 	notes := a.brain.NoteCountForPR(pr.Repo, pr.Number)
+	now, soon, _, _ := a.brain.NoteCountByUrgency(pr.Repo, pr.Number)
 	cu := a.brain.ActiveSession(pr.Repo, pr.Number)
 	touched := a.brain.HasAnyMarks(pr.Repo, pr.Number) ||
 		len(a.brain.AllFileReviewedStates(pr.Repo, pr.Number)) > 0
@@ -510,7 +511,7 @@ func (a *app) buildTodoItem(pr gh.PR) *todo.Item {
 		remaining = a.brain.UnseenCount(pr.Repo, pr.Number, files)
 	}
 
-	it := todo.Item{PR: pr, Notes: notes, Remaining: remaining}
+	it := todo.Item{PR: pr, Notes: notes, NotesNow: now, NotesSoon: soon, Remaining: remaining}
 	if touched && cu == nil {
 		if !filesLoaded || remaining > 0 {
 			it.Tags = append(it.Tags, "in-progress")

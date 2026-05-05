@@ -5,6 +5,39 @@ import (
 	"fmt"
 )
 
+// Urgency is the triage level on a note, modeled after Iron's CR urgency
+// (Now / Soon / Someday). Empty means "untriaged" — the note exists but
+// hasn't been prioritized yet.
+type Urgency string
+
+const (
+	UrgencyNow     Urgency = "now"
+	UrgencySoon    Urgency = "soon"
+	UrgencySomeday Urgency = "someday"
+)
+
+func (u Urgency) Valid() bool {
+	switch u {
+	case UrgencyNow, UrgencySoon, UrgencySomeday:
+		return true
+	}
+	return false
+}
+
+// Next cycles to the next urgency level: "" → now → soon → someday → "".
+func (u Urgency) Next() Urgency {
+	switch u {
+	case "":
+		return UrgencyNow
+	case UrgencyNow:
+		return UrgencySoon
+	case UrgencySoon:
+		return UrgencySomeday
+	default:
+		return ""
+	}
+}
+
 type Note struct {
 	ID              int64  `json:"id"`
 	PRKey           string `json:"pr_key"`
@@ -16,6 +49,8 @@ type Note struct {
 	CreatedAt       string `json:"created_at"`
 	ResolvedAt      string `json:"resolved_at,omitempty"`
 	GitHubCommentID int64  `json:"github_comment_id,omitempty"` // 0 = local only; else the id GitHub returned
+	Urgency         string `json:"urgency,omitempty"`           // "now" / "soon" / "someday" / empty
+	Assignee        string `json:"assignee,omitempty"`          // "@username" or empty
 }
 
 // NoteFilter controls whether NotesForPR / NotesForFile / PRKeysWithNotes
@@ -61,7 +96,7 @@ func (b *Brain) NoteCountForFile(repo string, pr int, path string) int {
 
 func (b *Brain) NotesForPR(repo string, pr int, filter NoteFilter) []Note {
 	key := PRKey(repo, pr)
-	q := `SELECT id, pr_key, path, line_no, line_hash, body, source, created_at, resolved_at, github_comment_id FROM notes WHERE pr_key = ?`
+	q := `SELECT id, pr_key, path, line_no, line_hash, body, source, created_at, resolved_at, github_comment_id, urgency, assignee FROM notes WHERE pr_key = ?`
 	if filter == NotesActive {
 		q += ` AND resolved_at IS NULL`
 	}
@@ -74,14 +109,20 @@ func (b *Brain) NotesForPR(repo string, pr int, filter NoteFilter) []Note {
 	var out []Note
 	for rows.Next() {
 		var n Note
-		var resolved sql.NullString
+		var resolved, urgency, assignee sql.NullString
 		var ghID sql.NullInt64
-		if rows.Scan(&n.ID, &n.PRKey, &n.Path, &n.LineNo, &n.LineHash, &n.Body, &n.Source, &n.CreatedAt, &resolved, &ghID) == nil {
+		if rows.Scan(&n.ID, &n.PRKey, &n.Path, &n.LineNo, &n.LineHash, &n.Body, &n.Source, &n.CreatedAt, &resolved, &ghID, &urgency, &assignee) == nil {
 			if resolved.Valid {
 				n.ResolvedAt = resolved.String
 			}
 			if ghID.Valid {
 				n.GitHubCommentID = ghID.Int64
+			}
+			if urgency.Valid {
+				n.Urgency = urgency.String
+			}
+			if assignee.Valid {
+				n.Assignee = assignee.String
 			}
 			out = append(out, n)
 		}
@@ -92,7 +133,7 @@ func (b *Brain) NotesForPR(repo string, pr int, filter NoteFilter) []Note {
 func (b *Brain) NotesForFile(repo string, pr int, path string) []Note {
 	key := PRKey(repo, pr)
 	rows, err := b.db.Query(
-		`SELECT id, pr_key, path, line_no, line_hash, body, source, created_at, resolved_at, github_comment_id
+		`SELECT id, pr_key, path, line_no, line_hash, body, source, created_at, resolved_at, github_comment_id, urgency, assignee
 		 FROM notes WHERE pr_key = ? AND path = ? AND resolved_at IS NULL ORDER BY line_no, id`,
 		key, path)
 	if err != nil {
@@ -102,14 +143,20 @@ func (b *Brain) NotesForFile(repo string, pr int, path string) []Note {
 	var out []Note
 	for rows.Next() {
 		var n Note
-		var resolved sql.NullString
+		var resolved, urgency, assignee sql.NullString
 		var ghID sql.NullInt64
-		if rows.Scan(&n.ID, &n.PRKey, &n.Path, &n.LineNo, &n.LineHash, &n.Body, &n.Source, &n.CreatedAt, &resolved, &ghID) == nil {
+		if rows.Scan(&n.ID, &n.PRKey, &n.Path, &n.LineNo, &n.LineHash, &n.Body, &n.Source, &n.CreatedAt, &resolved, &ghID, &urgency, &assignee) == nil {
 			if resolved.Valid {
 				n.ResolvedAt = resolved.String
 			}
 			if ghID.Valid {
 				n.GitHubCommentID = ghID.Int64
+			}
+			if urgency.Valid {
+				n.Urgency = urgency.String
+			}
+			if assignee.Valid {
+				n.Assignee = assignee.String
 			}
 			out = append(out, n)
 		}
@@ -118,22 +165,31 @@ func (b *Brain) NotesForFile(repo string, pr int, path string) []Note {
 }
 
 func (b *Brain) SaveNote(repo string, pr int, path string, lineNo int, lineHash, body string) error {
-	return b.insertNote(PRKey(repo, pr), path, lineNo, lineHash, body, "human")
+	return b.insertNote(PRKey(repo, pr), path, lineNo, lineHash, body, "human", "", "")
+}
+
+// SaveNoteWithUrgency is like SaveNote but also records urgency and assignee.
+func (b *Brain) SaveNoteWithUrgency(repo string, pr int, path string, lineNo int, lineHash, body string, urgency Urgency, assignee string) error {
+	u := ""
+	if urgency.Valid() {
+		u = string(urgency)
+	}
+	return b.insertNote(PRKey(repo, pr), path, lineNo, lineHash, body, "human", u, assignee)
 }
 
 // insertNote is the shared path for human and agent notes: one tx that
 // writes the row and the note.add event. The event payload carries the
 // full body so a future replay-from-events can reconstruct the note even
 // if the row has since been hard-deleted.
-func (b *Brain) insertNote(key, path string, lineNo int, lineHash, body, source string) error {
+func (b *Brain) insertNote(key, path string, lineNo int, lineHash, body, source, urgency, assignee string) error {
 	tx, err := b.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	res, err := tx.Exec(
-		`INSERT INTO notes (pr_key, path, line_no, line_hash, body, source) VALUES (?, ?, ?, ?, ?, ?)`,
-		key, path, lineNo, lineHash, body, source)
+		`INSERT INTO notes (pr_key, path, line_no, line_hash, body, source, urgency, assignee) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		key, path, lineNo, lineHash, body, source, urgency, assignee)
 	if err != nil {
 		return err
 	}
@@ -145,6 +201,12 @@ func (b *Brain) insertNote(key, path string, lineNo int, lineHash, body, source 
 		"source":    source,
 		"body":      body,
 	}
+	if urgency != "" {
+		payload["urgency"] = urgency
+	}
+	if assignee != "" {
+		payload["assignee"] = assignee
+	}
 	if err := logEvent(tx, "note.add", key, path, payload); err != nil {
 		return err
 	}
@@ -155,7 +217,7 @@ func (b *Brain) insertNote(key, path string, lineNo int, lineHash, body, source 
 // don't see per-line hashes so line_hash stays empty; source="agent" keeps
 // these filterable away from human notes in future UI work.
 func (b *Brain) SaveAgentNote(repo string, pr int, path string, lineNo int, body string) error {
-	return b.insertNote(PRKey(repo, pr), path, lineNo, "", body, "agent")
+	return b.insertNote(PRKey(repo, pr), path, lineNo, "", body, "agent", "", "")
 }
 
 // SetNoteGitHubCommentID stamps the id GitHub returned on the note, so we
@@ -226,8 +288,9 @@ func (b *Brain) ResolveNote(id int64) error {
 }
 
 // DeleteNote hard-deletes a note row. The event payload captures the
-// deleted row's contents (body, line anchor, source, resolved_at) so a
-// future undo/replay can resurrect the note without any other source.
+// deleted row's contents (body, line anchor, source, resolved_at, urgency,
+// assignee) so a future undo/replay can resurrect the note without any
+// other source.
 func (b *Brain) DeleteNote(id int64) error {
 	tx, err := b.db.Begin()
 	if err != nil {
@@ -237,11 +300,11 @@ func (b *Brain) DeleteNote(id int64) error {
 	var (
 		key, path, body, source, lineHash string
 		lineNo                            int
-		resolved                          sql.NullString
+		resolved, urgency, assignee       sql.NullString
 	)
 	switch err = tx.QueryRow(
-		`SELECT pr_key, path, line_no, line_hash, body, source, resolved_at FROM notes WHERE id = ?`, id,
-	).Scan(&key, &path, &lineNo, &lineHash, &body, &source, &resolved); err {
+		`SELECT pr_key, path, line_no, line_hash, body, source, resolved_at, urgency, assignee FROM notes WHERE id = ?`, id,
+	).Scan(&key, &path, &lineNo, &lineHash, &body, &source, &resolved, &urgency, &assignee); err {
 	case sql.ErrNoRows:
 		return nil
 	case nil:
@@ -261,8 +324,110 @@ func (b *Brain) DeleteNote(id int64) error {
 	if resolved.Valid {
 		payload["resolved_at"] = resolved.String
 	}
+	if urgency.Valid {
+		payload["urgency"] = urgency.String
+	}
+	if assignee.Valid {
+		payload["assignee"] = assignee.String
+	}
 	if err := logEvent(tx, "note.delete", key, path, payload); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// SetNoteUrgency sets the urgency level on a note. Pass an empty string to
+// clear urgency (back to untriaged).
+func (b *Brain) SetNoteUrgency(id int64, urgency Urgency) error {
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var key, path string
+	switch err = tx.QueryRow(
+		`SELECT pr_key, path FROM notes WHERE id = ?`, id,
+	).Scan(&key, &path); err {
+	case sql.ErrNoRows:
+		return fmt.Errorf("note %d not found", id)
+	case nil:
+	default:
+		return err
+	}
+	var u string
+	if urgency.Valid() {
+		u = string(urgency)
+	}
+	if _, err := tx.Exec(`UPDATE notes SET urgency = ? WHERE id = ?`, u, id); err != nil {
+		return err
+	}
+	if err := logEvent(tx, "note.set-urgency", key, path, map[string]any{
+		"note_id": id,
+		"urgency": u,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SetNoteAssignee sets the assignee on a note. Pass an empty string to
+// clear the assignee.
+func (b *Brain) SetNoteAssignee(id int64, assignee string) error {
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var key, path string
+	switch err = tx.QueryRow(
+		`SELECT pr_key, path FROM notes WHERE id = ?`, id,
+	).Scan(&key, &path); err {
+	case sql.ErrNoRows:
+		return fmt.Errorf("note %d not found", id)
+	case nil:
+	default:
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE notes SET assignee = ? WHERE id = ?`, assignee, id); err != nil {
+		return err
+	}
+	if err := logEvent(tx, "note.set-assignee", key, path, map[string]any{
+		"note_id":  id,
+		"assignee": assignee,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// NoteCountByUrgency returns the count of active notes grouped by urgency.
+func (b *Brain) NoteCountByUrgency(repo string, pr int) (now, soon, someday, untriaged int) {
+	key := PRKey(repo, pr)
+	rows, err := b.db.Query(
+		`SELECT urgency, COUNT(*) FROM notes WHERE pr_key = ? AND resolved_at IS NULL GROUP BY urgency`, key)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var u sql.NullString
+		var count int
+		if rows.Scan(&u, &count) == nil {
+			if u.Valid {
+				switch u.String {
+				case "now":
+					now = count
+				case "soon":
+					soon = count
+				case "someday":
+					someday = count
+				default:
+					untriaged = count
+				}
+			} else {
+				untriaged = count
+			}
+		}
+	}
+	return
 }

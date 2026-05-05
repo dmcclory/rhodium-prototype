@@ -31,6 +31,9 @@ func (m *mockBrain) SetFileReviewed(_ string, _ int, path, _, _ string, kind bra
 	return nil
 }
 func (m *mockBrain) SaveNote(string, int, string, int, string, string) error { return nil }
+func (m *mockBrain) SaveNoteWithUrgency(string, int, string, int, string, string, brain.Urgency, string) error {
+	return nil
+}
 
 func TestAckForget(t *testing.T) {
 	mb := &mockBrain{}

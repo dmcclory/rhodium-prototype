@@ -40,6 +40,7 @@ type Brain interface {
 	SetHunkMarks(repo string, num int, path string, marks map[string]bool) error
 	SetFileReviewed(repo string, num int, path, head, base string, kind brain.MarkKind) error
 	SaveNote(repo string, num int, path string, lineNo int, hash, body string) error
+	SaveNoteWithUrgency(repo string, num int, path string, lineNo int, hash, body string, urgency brain.Urgency, assignee string) error
 }
 
 // --- typed action messages emitted by the view ---
@@ -159,6 +160,8 @@ type Model struct {
 	noting       bool
 	noteLineNo   int
 	noteLineHash string
+	noteUrgency  brain.Urgency // urgency for the note being composed
+	noteAssignee string        // assignee for the note being composed
 
 	// Reply input state. When replyToID != 0 the noting textarea is
 	// composing a reply to an inline thread instead of a local note.
@@ -238,10 +241,14 @@ func (m *Model) Footer() string {
 		if m.mention.open {
 			return "@-mention  ↑/↓: nav  type to filter  enter: insert  esc: close"
 		}
-		if m.replyToID != 0 {
-			return fmt.Sprintf("replying to @%s on line %d  ctrl+d: send  esc: cancel", m.replyToAuthor, m.noteLineNo)
+		urg := ""
+		if m.noteUrgency != "" {
+			urg = fmt.Sprintf(" urgency:%s", m.noteUrgency)
 		}
-		return fmt.Sprintf("line %d  ctrl+d: save  type @ to mention  esc: cancel", m.noteLineNo)
+		if m.replyToID != 0 {
+			return fmt.Sprintf("replying to @%s on line %d  ctrl+d: send! to cycle urgency%s  esc: cancel", m.replyToAuthor, m.noteLineNo, urg)
+		}
+		return fmt.Sprintf("line %d  ctrl+d: save  !: cycle urgency%s  type @ to mention  esc: cancel", m.noteLineNo, urg)
 	}
 	marked := 0
 	total := 0
@@ -823,6 +830,24 @@ func parseLeadingInt(s string) int {
 
 func statusCmd(text string) tea.Cmd {
 	return func() tea.Msg { return StatusMsg{Text: text} }
+}
+
+// notePlaceholder returns the textarea placeholder text, reflecting the
+// current urgency and assignee selection.
+func (m *Model) notePlaceholder() string {
+	parts := []string{"ctrl+d to save"}
+	if m.noteUrgency != "" {
+		parts = append(parts, fmt.Sprintf("urgency:%s", m.noteUrgency))
+	}
+	if m.noteAssignee != "" {
+		parts = append(parts, fmt.Sprintf("@%s", m.noteAssignee))
+	}
+	parts = append(parts, "esc to cancel")
+	prefix := "Write a note... ("
+	if m.replyToID != 0 {
+		prefix = fmt.Sprintf("replying to @%s on line %d (", m.replyToAuthor, m.noteLineNo)
+	}
+	return prefix + strings.Join(parts, ", ") + ")"
 }
 
 // restoreSize resets the viewport to the full content area. Called after

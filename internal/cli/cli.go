@@ -30,10 +30,18 @@ func Run(args []string) error {
 		return cmdMark(args[1:], false)
 	case "note":
 		return cmdNote(args[1:])
+	case "note-set-urgency":
+		return cmdNoteSetUrgency(args[1:])
+	case "note-set-assignee":
+		return cmdNoteSetAssignee(args[1:])
 	case "resolve":
 		return cmdResolve(args[1:])
 	case "brain":
 		return cmdBrain(args[1:])
+	case "brain-clear":
+		return cmdBrainClear(args[1:])
+	case "brain-forget":
+		return cmdBrainForget(args[1:])
 	case "log":
 		return cmdLog(args[1:])
 	case "mark-fully-reviewed":
@@ -85,10 +93,14 @@ Usage:
   rhodium mark <owner/repo#N> <file> <hunk-hash>    mark a hunk as reviewed
   rhodium unmark <owner/repo#N> <file> <hunk-hash>  unmark a hunk
   rhodium note <owner/repo#N> <file> <line> <body>  add a note (body "-" reads from stdin)
+  rhodium note set-urgency <id> now|soon|someday|clear  set urgency on a note
+  rhodium note set-assignee <id> <user|clear>       set assignee on a note
   rhodium resolve <note-id>...                      mark one or more notes resolved
   rhodium brain status                              inspect the brain db (path, schema version, pending migrations)
   rhodium brain log [--pr ref] [--kind p] [--limit N]  print the brain mutation log, newest first
   rhodium brain show <owner/repo#N>                  review state summary (files, hunks, notes, session)
+  rhodium brain clear <owner/repo#N>                drop all marks + file_reviews for a PR, keep notes
+  rhodium brain forget <owner/repo#N> <path>        drop marks for one file
   rhodium log <owner/repo#N> [--verbose]            per-commit review overlay for a PR
   rhodium mark-fully-reviewed <owner/repo#N>        mark PR reviewed, no catch-up
 
@@ -96,6 +108,8 @@ Flags:
   --json     emit JSON (notes, todo, state, brain log, brain show, log)
   --sync     (todo only) refresh the PR cache from GitHub before printing
   --all      (notes only) include resolved notes
+  --urgency  (note only) set urgency: now, soon, someday
+  --assignee (note only) set assignee
   --pr       (brain log) filter to one PR (owner/repo#N)
   --kind     (brain log) filter by kind prefix (mark., note., session., ...)
   --limit    (brain log) max events to return (default 100)
@@ -114,6 +128,14 @@ func parsePRRef(s string) (repo string, number int, err error) {
 		return "", 0, err
 	}
 	return m[1], n, nil
+}
+
+func parseNoteID(s string) (int64, error) {
+	id, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("note id must be an integer: %q", s)
+	}
+	return id, nil
 }
 
 func pluralize(word string, n int) string {

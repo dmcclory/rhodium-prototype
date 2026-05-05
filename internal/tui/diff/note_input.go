@@ -21,18 +21,28 @@ func (m *Model) updateNotingKeys(b Brain, msg tea.KeyMsg) tea.Cmd {
 		m.noting = false
 		m.replyToID = 0
 		m.replyToAuthor = ""
+		m.noteUrgency = ""
+		m.noteAssignee = ""
 		m.noteInput.Blur()
-		m.noteInput.Placeholder = "Write a note... (ctrl+d to save, esc to cancel)"
+		m.noteInput.Placeholder = m.notePlaceholder()
 		m.restoreSize()
+		return nil
+	case "!":
+		m.noteUrgency = m.noteUrgency.Next()
+		m.noteInput.Placeholder = m.notePlaceholder()
 		return nil
 	case "ctrl+d":
 		body := strings.TrimSpace(m.noteInput.Value())
 		replyTo := m.replyToID
+		urgency := m.noteUrgency
+		assignee := m.noteAssignee
 		m.noting = false
 		m.replyToID = 0
 		m.replyToAuthor = ""
+		m.noteUrgency = ""
+		m.noteAssignee = ""
 		m.noteInput.Blur()
-		m.noteInput.Placeholder = "Write a note... (ctrl+d to save, esc to cancel)"
+		m.noteInput.Placeholder = m.notePlaceholder()
 		m.restoreSize()
 		if body == "" || m.pr == nil {
 			return nil
@@ -46,7 +56,13 @@ func (m *Model) updateNotingKeys(b Brain, msg tea.KeyMsg) tea.Cmd {
 				},
 			)
 		}
-		if err := b.SaveNote(m.pr.Repo, m.pr.Number, m.file, m.noteLineNo, m.noteLineHash, body); err != nil {
+		var err error
+		if urgency != "" || assignee != "" {
+			err = b.SaveNoteWithUrgency(m.pr.Repo, m.pr.Number, m.file, m.noteLineNo, m.noteLineHash, body, urgency, assignee)
+		} else {
+			err = b.SaveNote(m.pr.Repo, m.pr.Number, m.file, m.noteLineNo, m.noteLineHash, body)
+		}
+		if err != nil {
 			return statusCmd("save note: " + err.Error())
 		}
 		m.notes = b.NotesForFile(m.pr.Repo, m.pr.Number, m.file)

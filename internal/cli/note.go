@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -16,7 +17,13 @@ import (
 // or from stdin when body == "-". Line hash is computed here from the file
 // content at that line, so nvim doesn't need to duplicate the hashing.
 func cmdNote(args []string) error {
-	_, pos := splitFlags(args)
+	flags, pos := splitFlags(args, "urgency", "assignee")
+	fs := flag.NewFlagSet("note", flag.ContinueOnError)
+	urgencyStr := fs.String("urgency", "", "urgency: now, soon, someday")
+	assignee := fs.String("assignee", "", "assignee (e.g. @username)")
+	if err := fs.Parse(flags); err != nil {
+		return err
+	}
 	if len(pos) != 4 {
 		return fmt.Errorf("usage: rhodium note <owner/repo#N> <file> <line> <body|->")
 	}
@@ -61,6 +68,19 @@ func cmdNote(args []string) error {
 			}
 			break
 		}
+	}
+	// Parse urgency flag.
+	var urgency brain.Urgency
+	if *urgencyStr != "" {
+		urgency = brain.Urgency(*urgencyStr)
+		if !urgency.Valid() {
+			return fmt.Errorf("unknown urgency %q — use now, soon, or someday", *urgencyStr)
+		}
+	}
+
+	// Save note with urgency/assignee if provided, otherwise use the simple path.
+	if urgency != "" || *assignee != "" {
+		return b.SaveNoteWithUrgency(repo, num, path, lineNo, lineHash, body, urgency, *assignee)
 	}
 	return b.SaveNote(repo, num, path, lineNo, lineHash, body)
 }

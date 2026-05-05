@@ -294,3 +294,112 @@ func (b *Brain) AllActiveSessions() []ReviewSession {
 	}
 	return out
 }
+
+// ClearPR drops all hunk marks, file reviews, and review session data for a
+// PR. Notes are preserved. Useful when a PR was reviewed at the wrong SHA or
+// the reviewer wants a fresh start.
+func (b *Brain) ClearPR(prKey string) (int64, error) {
+	tx, err := b.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var affected int64
+
+	// Drop hunk marks.
+	res, err := tx.Exec(`DELETE FROM hunk_marks WHERE pr_key = ?`, prKey)
+	if err != nil {
+		return 0, fmt.Errorf("hunk_marks: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	affected += n
+
+	// Drop file reviews.
+	res, err = tx.Exec(`DELETE FROM file_reviews WHERE pr_key = ?`, prKey)
+	if err != nil {
+		return 0, fmt.Errorf("file_reviews: %w", err)
+	}
+	n, _ = res.RowsAffected()
+	affected += n
+
+	// Complete all sessions for this PR and drop their file entries.
+	var sessionIDs []int64
+	rows, err := tx.Query(`SELECT id FROM review_sessions WHERE pr_key = ?`, prKey)
+	if err != nil {
+		return 0, fmt.Errorf("review_sessions: %w", err)
+	}
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			sessionIDs = append(sessionIDs, id)
+		}
+	}
+	rows.Close()
+
+	if _, err := tx.Exec(`UPDATE review_sessions SET completed_at = datetime('now') WHERE pr_key = ? AND completed_at IS NULL`, prKey); err != nil {
+		return 0, fmt.Errorf("complete sessions: %w", err)
+	}
+	res, err = tx.Exec(`DELETE FROM review_session_files WHERE session_id IN (SELECT id FROM review_sessions WHERE pr_key = ?)`, prKey)
+	if err != nil {
+		return 0, fmt.Errorf("session files: %w", err)
+	}
+	n, _ = res.RowsAffected()
+	affected += n
+
+	// Log the clear event.
+	if err := logEvent(tx, "brain.clear", prKey, "", map[string]any{
+		"rows_removed": affected,
+		"sessions":     len(sessionIDs),
+	}); err != nil {
+		return 0, err
+	}
+
+	return affected, tx.Commit()
+}
+
+// ForgetFile drops hunk marks and the file-review entry for one file within
+// a PR. Notes on that file are preserved. Useful for misclassified marks or
+// files that shouldn't have been advanced.
+func (b *Brain) ForgetFile(prKey, path string) (int64, error) {
+	tx, err := b.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var affected int64
+
+	res, err := tx.Exec(`DELETE FROM hunk_marks WHERE pr_key = ? AND path = ?`, prKey, path)
+	if err != nil {
+		return 0, fmt.Errorf("hunk_marks: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	affected += n
+
+	res, err = tx.Exec(`DELETE FROM file_reviews WHERE pr_key = ? AND path = ?`, prKey, path)
+	if err != nil {
+		return 0, fmt.Errorf("file_reviews: %w", err)
+	}
+	n, _ = res.RowsAffected()
+	affected += n
+
+	// Mark the file as not-done in any active session.
+	res, err = tx.Exec(
+		`UPDATE review_session_files SET done = 0 WHERE session_id IN
+		 (SELECT id FROM review_sessions WHERE pr_key = ? AND completed_at IS NULL)
+		 AND path = ?`, prKey, path)
+	if err != nil {
+		return 0, fmt.Errorf("session files: %w", err)
+	}
+	n, _ = res.RowsAffected()
+	affected += n
+
+	if err := logEvent(tx, "brain.forget", prKey, path, map[string]any{
+		"rows_removed": affected,
+	}); err != nil {
+		return 0, err
+	}
+
+	return affected, tx.Commit()
+}

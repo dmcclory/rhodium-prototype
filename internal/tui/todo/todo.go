@@ -49,6 +49,8 @@ type Item struct {
 	Total     int        // catch-up total
 	Remaining int        // unseen hunk count — ignored when files not loaded
 	Notes     int        // notes attached to this PR
+	NotesNow  int        // "now" urgency notes
+	NotesSoon int        // "soon" urgency notes
 	Cols      prrow.Cols // populated by Rebuild for column alignment
 }
 
@@ -67,7 +69,18 @@ func (i Item) Title() string {
 		case "unseen":
 			suffix = append(suffix, "unseen")
 		case "notes":
-			suffix = append(suffix, fmt.Sprintf("%d notes", i.Notes))
+			parts := []string{fmt.Sprintf("%d notes", i.Notes)}
+			urgencyParts := []string{}
+			if i.NotesNow > 0 {
+				urgencyParts = append(urgencyParts, fmt.Sprintf("!%d", i.NotesNow))
+			}
+			if i.NotesSoon > 0 {
+				urgencyParts = append(urgencyParts, fmt.Sprintf("·%d", i.NotesSoon))
+			}
+			if len(urgencyParts) > 0 {
+				parts = append(parts, strings.Join(urgencyParts, " "))
+			}
+			suffix = append(suffix, strings.Join(parts, " "))
 		case "done":
 			suffix = append(suffix, "✓ done")
 		}
