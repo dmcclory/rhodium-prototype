@@ -175,6 +175,11 @@ type Model struct {
 
 	BackRoute     router.Route
 	AgentBindings []keys.Binding
+
+	// Forget-mode state: file was removed from the PR between reviews.
+	// Awaiting user ack before advancing the brain.
+	forgetMode bool
+	forgetMsg  string
 }
 
 func New() Model {
@@ -273,7 +278,11 @@ func (m *Model) Footer() string {
 			modeHint = "  [full diff]  d: catch-up"
 		}
 	}
-	return fmt.Sprintf("hunk %d/%d  marked %d/%d%s  ↑/↓: nav  j/k: cursor  space: toggle+next  m: mark all  c: note  P: publish note  R: reply to thread  o: open  u: unmark  h: back", cur, total, marked, total, modeHint)
+	footer := fmt.Sprintf("hunk %d/%d  marked %d/%d%s  ↑/↓: nav  j/k: cursor  space: toggle+next  m: mark all  c: note  P: publish note  R: reply to thread  o: open  u: unmark  h: back", cur, total, marked, total, modeHint)
+	if m.forgetMode {
+		return "space/enter: ack and advance  esc/h: ack and back"
+	}
+	return footer
 }
 
 // Update routes a message: keys to mode-specific handlers, async results
@@ -507,14 +516,15 @@ func (m *Model) onDiamondClassified(b Brain, msg DiamondClassifiedMsg) tea.Cmd {
 	if msg.Class.Hidden() {
 		m.catchUpMode = false
 		m.segmented = false
-		label := msg.Class.String()
 		if msg.Class.IsForget() {
-			label = "FORGET — base absorbed feature"
+			m.forgetMode = true
+			m.forgetMsg = fmt.Sprintf("  %s: FORGET — base absorbed this file\n\n  space/enter: ack and advance  esc/h: ack and back", m.file)
+			return statusCmd(fmt.Sprintf("FORGET: %s", m.file))
 		}
 		b.SetFileReviewed(m.pr.Repo, m.pr.Number, m.file, m.pr.HeadSHA, m.pr.BaseSHA, brain.MarkAuto)
 		path := m.file
 		return tea.Batch(
-			statusCmd(fmt.Sprintf("✓ %s: %s (auto-caught-up)", m.file, label)),
+			statusCmd(fmt.Sprintf("✓ %s: %s (auto-caught-up)", m.file, msg.Class)),
 			func() tea.Msg { return FileMarkedDoneMsg{Path: path} },
 		)
 	}
@@ -567,6 +577,11 @@ func (m *Model) onBlobLoaded(msg BlobLoadedMsg) tea.Cmd {
 // --- rendering ---
 
 func (m *Model) redraw() {
+	if m.forgetMode {
+		m.vp.SetContent(m.forgetMsg)
+		m.hunkLines = nil
+		return
+	}
 	if len(m.hunks) == 0 {
 		m.vp.SetContent("(no hunks — nothing to review)")
 		m.hunkLines = nil
@@ -687,6 +702,18 @@ func (m *Model) cursorLineHash(lineNo int) string {
 		return ""
 	}
 	return hashLine(lines[idx])
+}
+
+// ackForget confirms the FORGET classification: advances the brain
+// (MarkAuto) and emits FileMarkedDoneMsg so the app moves to the next file.
+func (m *Model) ackForget(b Brain) tea.Cmd {
+	m.forgetMode = false
+	if m.pr == nil || m.file == "" {
+		return nil
+	}
+	b.SetFileReviewed(m.pr.Repo, m.pr.Number, m.file, m.pr.HeadSHA, m.pr.BaseSHA, brain.MarkAuto)
+	path := m.file
+	return func() tea.Msg { return FileMarkedDoneMsg{Path: path} }
 }
 
 // --- persistence ---

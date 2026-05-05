@@ -3,6 +3,7 @@ package diff
 import (
 	"fmt"
 
+	"rhodium/internal/brain"
 	corediff "rhodium/internal/diff"
 	"rhodium/internal/gh"
 	"rhodium/internal/tui/keys"
@@ -13,6 +14,17 @@ import (
 // updateKeys dispatches a keypress in non-noting mode. Falls back to the
 // viewport so j/k and arrow keys scroll naturally when no binding matched.
 func (m *Model) updateKeys(b Brain, msg tea.KeyMsg, globals []keys.Binding) tea.Cmd {
+	if m.forgetMode {
+		switch msg.String() {
+		case " ", "enter":
+			return m.ackForget(b)
+		case "esc", "h", "left":
+			m.forgetMode = false
+			_ = b.SetFileReviewed(m.pr.Repo, m.pr.Number, m.file, m.pr.HeadSHA, m.pr.BaseSHA, brain.MarkAuto)
+			return func() tea.Msg { return LeavingMsg{} }
+		}
+		return nil
+	}
 	if cmd, matched := keys.Dispatch(msg.String(), false, m.bindings(b), globals); matched {
 		return cmd
 	}
