@@ -621,6 +621,8 @@ func (m *Model) redraw() {
 	var lmap []int
 	if m.blob != "" && !m.segmented {
 		body, lines, lmap = renderFullFile(m.blob, m.hunks, m.marks, m.hunkIdx, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved)
+	} else if m.segmented {
+		body, lines, lmap = renderSegmented(m.segments, m.segmentViewIdx, m.marks, m.hunkIdx, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved)
 	} else {
 		body, lines, lmap = renderHunks(m.hunks, m.marks, m.hunkIdx, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved)
 	}

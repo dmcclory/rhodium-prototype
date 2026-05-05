@@ -394,6 +394,184 @@ func (f *fullFileBuilder) emitHunkBody(bodyLines []string, newFileLine int) int 
 	return newFileLine
 }
 
+// renderSegment renders a single segment's diff with proper line anchoring
+// to the View.To corner. toLineOffset is added to all "new" line numbers
+// so they reflect the segment's position in the full file. Returns the
+// rendered body, per-hunk output-line offsets, and the output→file-line map.
+// focusedHunkInSeg is the 0-based index of the focused hunk *within this
+// segment's hunks only* (0 = first diff hunk, etc.).
+func renderSegment(seg corediff.Segment, view corediff.View, toLineOffset int, marks map[string]bool, focusedHunkInSeg int, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
+	d := corediff.Diamond{B1: seg.B1, F1: seg.F1, B2: seg.B2, F2: seg.F2}
+	from := d.Get(view.From)
+	to := d.Get(view.To)
+
+	segHunks := corediff.Diff2Hunks(from, to)
+	if len(segHunks) == 0 {
+		return "", nil, nil
+	}
+
+	byLine := notesByLine(notes)
+	resolvedByLine := notesByLine(resolvedNotes)
+	ghByLine := ghInlineByLine(ghInline, notes)
+
+	var b strings.Builder
+	var lineMap []int
+	hunkLines := make([]int, 0, len(segHunks))
+	lineNum := 0
+
+	for hi, h := range segHunks {
+		mark := "[ ]"
+		if marks[h.Hash] {
+			mark = markedStyle.Render("[✓]")
+		}
+		isFocused := hi == focusedHunkInSeg
+		headerLine := mark + " " + h.Header
+		if isFocused {
+			headerLine = focusedHunkStyle.Render(headerLine)
+		}
+		hunkLines = append(hunkLines, lineNum)
+		b.WriteString(headerLine + "\n")
+		lineMap = append(lineMap, 0)
+		lineNum++
+
+		r := parseHunkRange(h.Header)
+		fileLine := r.newStart + toLineOffset
+		for _, line := range h.BodyLines {
+			cur := fileLine
+			isFile := true
+			if len(line) > 0 && line[0] == '-' {
+				isFile = false
+			}
+
+			prefix := ""
+			if lineNum == cursorLine {
+				prefix = cursorIndicator
+			}
+			b.WriteString(prefix + colorDiffLine(line) + "\n")
+			if isFile {
+				lineMap = append(lineMap, cur)
+			} else {
+				lineMap = append(lineMap, 0)
+			}
+			lineNum++
+
+			if isFile {
+				if ln, ok := byLine[cur]; ok {
+					renderNoteLines(&b, ln, &lineNum, &lineMap)
+				}
+				if gl, ok := ghByLine[cur]; ok {
+					renderGHInlineLines(&b, gl, &lineNum, &lineMap)
+				}
+				if rn, ok := resolvedByLine[cur]; ok && len(rn) > 0 {
+					if showingResolved {
+						renderResolvedLines(&b, rn, &lineNum, &lineMap)
+					} else {
+						b.WriteString(resolvedIndicator + "\n")
+						lineMap = append(lineMap, 0)
+						lineNum++
+					}
+				}
+				fileLine++
+			}
+		}
+	}
+	return b.String(), hunkLines, lineMap
+}
+
+// segmentHeader renders the synthetic header line for a classified segment.
+func segmentHeader(segIdx, total int, seg corediff.Segment, view corediff.View) string {
+	return fmt.Sprintf("== segment %d/%d · %s · %s→%s (%s) ==",
+		segIdx+1, total, seg.Class, view.From, view.To, view.Kind)
+}
+
+// splitLinesCount returns the number of logical lines in s, matching the
+// convention of splitLinesForSeg (drops trailing phantom empty element).
+func splitLinesCount(s string) int {
+	if s == "" {
+		return 0
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return len(lines)
+}
+
+// renderSegmented renders each segment independently with per-segment
+// diff hunks and line anchoring to the View.To corner. This replaces the
+// flat renderHunks path when the diff is in segmented (catch-up) mode.
+// Returns the rendered body, per-hunk output-line offsets (including
+// segment headers), and the output→file-line map.
+func renderSegmented(segments []corediff.Segment, viewIdx int, marks map[string]bool, focusedHunkIdx int, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
+	var b strings.Builder
+	var lineMap []int
+	hunkLines := make([]int, 0, len(segments)*2)
+
+	toOffset := 0  // cumulative To-line offset across segments
+	globalIdx := 0 // global hunk index (headers + diff hunks combined)
+	outLine := 0   // running output line counter
+
+	for segIdx, seg := range segments {
+		views := seg.Class.Views()
+		if len(views) == 0 {
+			continue // hidden class — skip
+		}
+		view := views[viewIdx%len(views)]
+
+		// Determine how many diff hunks this segment will produce.
+		d := corediff.Diamond{B1: seg.B1, F1: seg.F1, B2: seg.B2, F2: seg.F2}
+		from := d.Get(view.From)
+		toContent := d.Get(view.To)
+		segHunks := corediff.Diff2Hunks(from, toContent)
+
+		// --- Segment header ---
+		headerFocused := globalIdx == focusedHunkIdx
+		headerText := segmentHeader(segIdx, len(segments), seg, view)
+		if headerFocused {
+			headerText = focusedHunkStyle.Render(headerText)
+		}
+		b.WriteString(headerText + "\n")
+		lineMap = append(lineMap, 0)
+		hunkLines = append(hunkLines, outLine)
+		outLine++
+		globalIdx++
+
+		// If no diff hunks, skip the body but still account for the To
+		// lines (they're context for subsequent segments).
+		if len(segHunks) == 0 {
+			toOffset += splitLinesCount(toContent)
+			continue
+		}
+
+		// Find which hunk within this segment is globally focused.
+		focusedInSeg := -1
+		for hi := 0; hi < len(segHunks); hi++ {
+			if globalIdx+hi == focusedHunkIdx {
+				focusedInSeg = hi
+				break
+			}
+		}
+
+		body, segHunkLines, segLineMap := renderSegment(seg, view, toOffset, marks, focusedInSeg, notes, resolvedNotes, ghInline, cursorLine, showingResolved)
+		if body != "" {
+			b.WriteString(body)
+			// segHunkLines are relative to the segment body's start (0-based).
+			// Convert to absolute output-line indices.
+			for _, rel := range segHunkLines {
+				hunkLines = append(hunkLines, outLine+rel)
+			}
+			lineMap = append(lineMap, segLineMap...)
+			outLine += len(segLineMap)
+		}
+
+		// Update offset for next segment.
+		toOffset += splitLinesCount(toContent)
+		globalIdx += len(segHunks)
+	}
+
+	return b.String(), hunkLines, lineMap
+}
+
 // ParseHunkRange exposes the internal hunk-range parser to the rhodium
 // package, which still uses it for building patchNewFileLines for the
 // notes-tab content. The existing rhodium copy was the only other caller;

@@ -6,14 +6,14 @@ import (
 )
 
 func TestDiff2HunksEmpty(t *testing.T) {
-	if got := diff2Hunks("", ""); got != nil {
-		t.Errorf("diff2Hunks(\"\", \"\") = %+v, want nil", got)
+	if got := Diff2Hunks("", ""); got != nil {
+		t.Errorf("Diff2Hunks(\"\", \"\") = %+v, want nil", got)
 	}
 }
 
 func TestDiff2HunksIdentical(t *testing.T) {
 	s := "one\ntwo\nthree\n"
-	if got := diff2Hunks(s, s); got != nil {
+	if got := Diff2Hunks(s, s); got != nil {
 		t.Errorf("identical input: got %+v, want nil", got)
 	}
 }
@@ -21,7 +21,7 @@ func TestDiff2HunksIdentical(t *testing.T) {
 func TestDiff2HunksPureInsertion(t *testing.T) {
 	from := ""
 	to := "a\nb\nc"
-	hs := diff2Hunks(from, to)
+	hs := Diff2Hunks(from, to)
 	if len(hs) != 1 {
 		t.Fatalf("got %d hunks, want 1: %+v", len(hs), hs)
 	}
@@ -40,7 +40,7 @@ func TestDiff2HunksPureInsertion(t *testing.T) {
 func TestDiff2HunksPureDeletion(t *testing.T) {
 	from := "a\nb\nc"
 	to := ""
-	hs := diff2Hunks(from, to)
+	hs := Diff2Hunks(from, to)
 	if len(hs) != 1 {
 		t.Fatalf("got %d hunks, want 1: %+v", len(hs), hs)
 	}
@@ -56,7 +56,7 @@ func TestDiff2HunksPureDeletion(t *testing.T) {
 func TestDiff2HunksReplacement(t *testing.T) {
 	from := "header\nold line\nfooter"
 	to := "header\nnew line\nfooter"
-	hs := diff2Hunks(from, to)
+	hs := Diff2Hunks(from, to)
 	if len(hs) != 1 {
 		t.Fatalf("got %d hunks, want 1: %+v", len(hs), hs)
 	}
@@ -78,7 +78,7 @@ func TestDiff2HunksTwoCloseChangesMerge(t *testing.T) {
 	// twice.
 	from := "a\nb\nc\nd\ne\nf\ng"
 	to := "a\nB\nc\nd\ne\nF\ng"
-	hs := diff2Hunks(from, to)
+	hs := Diff2Hunks(from, to)
 	if len(hs) != 1 {
 		t.Fatalf("got %d hunks, want 1 (merged): %+v", len(hs), hs)
 	}
@@ -97,7 +97,7 @@ func TestDiff2HunksTwoDistantChangesSplit(t *testing.T) {
 	// distinct hunks.
 	from := "a\nx\nc\nd\ne\nf\ng\nh\ni\ny\nk"
 	to := "a\nX\nc\nd\ne\nf\ng\nh\ni\nY\nk"
-	hs := diff2Hunks(from, to)
+	hs := Diff2Hunks(from, to)
 	if len(hs) != 2 {
 		t.Fatalf("got %d hunks, want 2: %+v", len(hs), hs)
 	}
@@ -116,8 +116,8 @@ func TestDiff2HunksTwoDistantChangesSplit(t *testing.T) {
 func TestDiff2HunksTrailingNewline(t *testing.T) {
 	// Trailing-newline variations should be canonicalized by splitLinesForSeg
 	// so they don't produce spurious "" diff lines.
-	h1 := diff2Hunks("a\nb", "a\nc")
-	h2 := diff2Hunks("a\nb\n", "a\nc\n")
+	h1 := Diff2Hunks("a\nb", "a\nc")
+	h2 := Diff2Hunks("a\nb\n", "a\nc\n")
 	if len(h1) != len(h2) {
 		t.Fatalf("hunk count differs: %d vs %d", len(h1), len(h2))
 	}

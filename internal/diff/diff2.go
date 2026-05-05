@@ -4,7 +4,7 @@ import (
 	"fmt"
 )
 
-// diff2Hunks produces unified-diff-style hunks between two content strings,
+// Diff2Hunks produces unified-diff-style hunks between two content strings,
 // using PatienceMatches for the line alignment. Output is a slice of Hunk
 // values with the same shape as ParseHunks: an `@@ -a,b +c,d @@` header,
 // BodyLines with leading ' ' / '-' / '+', and a Hash keyed off the +/- lines.
@@ -13,7 +13,7 @@ import (
 // `git diff` output — patience can pick different alignments, context window
 // merging is naive, and there's no \ No newline at end of file handling — but
 // it's deterministic, self-contained, and good enough for in-TUI display.
-func diff2Hunks(from, to string) []Hunk {
+func Diff2Hunks(from, to string) []Hunk {
 	const ctx = 3
 	fromLines := splitLinesForSeg(from)
 	toLines := splitLinesForSeg(to)
@@ -113,7 +113,7 @@ func MaxSegmentViews(segments []Segment) int {
 
 // SegmentHunks renders each segment under the given per-segment view choice
 // into a flat hunk list: a synthetic header hunk (Hash=="", unmarkable) that
-// labels the segment, followed by the diff2Hunks of that segment's corners.
+// labels the segment, followed by the Diff2Hunks of that segment's corners.
 // viewIdx is the global alt-view cycle (phase 2 cycles it); each segment
 // uses Views()[viewIdx % len(Views())].
 func SegmentHunks(segments []Segment, viewIdx int) []Hunk {
@@ -131,7 +131,7 @@ func SegmentHunks(segments []Segment, viewIdx int) []Hunk {
 		header := fmt.Sprintf("== segment %d/%d · %s · %s→%s (%s) ==",
 			i+1, n, seg.Class, view.From, view.To, view.Kind)
 		hunks = append(hunks, Hunk{Header: header})
-		hunks = append(hunks, diff2Hunks(from, to)...)
+		hunks = append(hunks, Diff2Hunks(from, to)...)
 	}
 	return hunks
 }
