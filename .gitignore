@@ -12,3 +12,4 @@ bin/
 # Added by goreleaser init:
 dist/
 .envrc
+.pi/
