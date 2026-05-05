@@ -211,10 +211,11 @@ func (m *Model) toggleMarkAtCursor(b Brain) tea.Cmd {
 	if m.marks == nil {
 		m.marks = map[string]bool{}
 	}
-	if m.marks[h.Hash] {
-		delete(m.marks, h.Hash)
+	key := markKey(m.hunks, m.hunkIdx, h, m.segmented)
+	if m.marks[key] {
+		delete(m.marks, key)
 	} else {
-		m.marks[h.Hash] = true
+		m.marks[key] = true
 	}
 	cmd := m.saveMarks(b)
 	m.stepHunk(1)
@@ -227,11 +228,11 @@ func (m *Model) markAll(b Brain) tea.Cmd {
 	if m.marks == nil {
 		m.marks = map[string]bool{}
 	}
-	for _, h := range m.hunks {
+	for i, h := range m.hunks {
 		if !h.IsMarkable() {
 			continue
 		}
-		m.marks[h.Hash] = true
+		m.marks[markKey(m.hunks, i, h, m.segmented)] = true
 	}
 	cmd := m.saveMarks(b)
 	m.redraw()
@@ -311,7 +312,7 @@ func (m *Model) cycleSegmentView() tea.Cmd {
 	}
 	m.segmentViewIdx++
 	m.hunks = corediff.SegmentHunks(m.segments, m.segmentViewIdx)
-	m.hunkIdx = firstUnmarked(m.hunks, m.marks)
+	m.hunkIdx = firstUnmarked(m.hunks, m.marks, true)
 	m.cursorLine = 0
 	maxV := corediff.MaxSegmentViews(m.segments)
 	m.redraw()
@@ -328,7 +329,7 @@ func (m *Model) toggleCatchUp(b Brain) tea.Cmd {
 		m.segmented = false
 		m.hunks = corediff.ParseHunks(m.fullPatch)
 		m.marks = b.HunkMarks(m.pr.Repo, m.pr.Number, m.file)
-		m.hunkIdx = firstUnmarked(m.hunks, m.marks)
+		m.hunkIdx = firstUnmarked(m.hunks, m.marks, false)
 		m.redraw()
 		m.jumpToHunk()
 		return statusCmd("full diff  (d: catch-up diff)")
@@ -344,8 +345,12 @@ func (m *Model) toggleCatchUp(b Brain) tea.Cmd {
 		m.segmented = false
 		status = fmt.Sprintf("catch-up [%s]: changes since %s  (d: full diff)", m.catchUpClass, shortSHA(m.catchUpOldHead))
 	}
-	m.marks = b.HunkMarks(m.pr.Repo, m.pr.Number, m.file)
-	m.hunkIdx = firstUnmarked(m.hunks, m.marks)
+	if m.segmented {
+		m.marks = prefixMarks(m.hunks, b.HunkMarks(m.pr.Repo, m.pr.Number, m.file))
+	} else {
+		m.marks = b.HunkMarks(m.pr.Repo, m.pr.Number, m.file)
+	}
+	m.hunkIdx = firstUnmarked(m.hunks, m.marks, m.segmented)
 	m.redraw()
 	m.jumpToHunk()
 	return statusCmd(status)

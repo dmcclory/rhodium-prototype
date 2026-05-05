@@ -399,8 +399,9 @@ func (f *fullFileBuilder) emitHunkBody(bodyLines []string, newFileLine int) int 
 // so they reflect the segment's position in the full file. Returns the
 // rendered body, per-hunk output-line offsets, and the output→file-line map.
 // focusedHunkInSeg is the 0-based index of the focused hunk *within this
-// segment's hunks only* (0 = first diff hunk, etc.).
-func renderSegment(seg corediff.Segment, view corediff.View, toLineOffset int, marks map[string]bool, focusedHunkInSeg int, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
+// segment's hunks only* (0 = first diff hunk, etc.). segIdx is the
+// segment's index in the segments slice, used to build prefixed mark keys.
+func renderSegment(seg corediff.Segment, view corediff.View, toLineOffset int, segIdx int, marks map[string]bool, focusedHunkInSeg int, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
 	d := corediff.Diamond{B1: seg.B1, F1: seg.F1, B2: seg.B2, F2: seg.F2}
 	from := d.Get(view.From)
 	to := d.Get(view.To)
@@ -421,7 +422,8 @@ func renderSegment(seg corediff.Segment, view corediff.View, toLineOffset int, m
 
 	for hi, h := range segHunks {
 		mark := "[ ]"
-		if marks[h.Hash] {
+		key := fmt.Sprintf("%d:%s", segIdx, h.Hash)
+		if marks[key] {
 			mark = markedStyle.Render("[✓]")
 		}
 		isFocused := hi == focusedHunkInSeg
@@ -552,7 +554,7 @@ func renderSegmented(segments []corediff.Segment, viewIdx int, marks map[string]
 			}
 		}
 
-		body, segHunkLines, segLineMap := renderSegment(seg, view, toOffset, marks, focusedInSeg, notes, resolvedNotes, ghInline, cursorLine, showingResolved)
+		body, segHunkLines, segLineMap := renderSegment(seg, view, toOffset, segIdx, marks, focusedInSeg, notes, resolvedNotes, ghInline, cursorLine, showingResolved)
 		if body != "" {
 			b.WriteString(body)
 			// segHunkLines are relative to the segment body's start (0-based).

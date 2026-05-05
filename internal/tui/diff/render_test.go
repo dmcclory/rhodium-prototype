@@ -25,7 +25,7 @@ func TestRenderSegmentSimpleB1B2F1(t *testing.T) {
 		t.Fatal("expected at least one view")
 	}
 
-	body, hunkLines, lineMap := renderSegment(seg, views[0], 0, nil, 0, nil, nil, nil, 0, false)
+	body, hunkLines, lineMap := renderSegment(seg, views[0], 0, 0, nil, 0, nil, nil, nil, 0, false)
 
 	if !strings.Contains(body, "line1") {
 		t.Error("expected context line 'line1' in output")
@@ -57,7 +57,7 @@ func TestRenderSegmentPureDeletion(t *testing.T) {
 		t.Fatal("expected at least one view")
 	}
 
-	body, _, _ := renderSegment(seg, views[0], 0, nil, 0, nil, nil, nil, 0, false)
+	body, _, _ := renderSegment(seg, views[0], 0, 0, nil, 0, nil, nil, nil, 0, false)
 
 	if !strings.Contains(body, "-delete1") {
 		t.Errorf("expected '-delete1' in output:\n%s", body)
@@ -81,7 +81,7 @@ func TestRenderSegmentConflict(t *testing.T) {
 		t.Fatal("expected at least one view")
 	}
 
-	body, _, _ := renderSegment(seg, views[0], 0, nil, 0, nil, nil, nil, 0, false)
+	body, _, _ := renderSegment(seg, views[0], 0, 0, nil, 0, nil, nil, nil, 0, false)
 
 	// views[0] for ClassConflict is B2→F2
 	if views[0].From != corediff.B2 || views[0].To != corediff.F2 {
@@ -109,7 +109,7 @@ func TestRenderSegmentEmptyHunks(t *testing.T) {
 		t.Fatal("expected at least one view")
 	}
 
-	body, hunkLines, lineMap := renderSegment(seg, views[0], 0, nil, 0, nil, nil, nil, 0, false)
+	body, hunkLines, lineMap := renderSegment(seg, views[0], 0, 0, nil, 0, nil, nil, nil, 0, false)
 
 	// No diff hunks → no hunkLines
 	if len(hunkLines) != 0 {
@@ -139,9 +139,10 @@ func TestRenderSegmentMarkedHunk(t *testing.T) {
 	if len(hunks) == 0 {
 		t.Fatal("expected hunks")
 	}
-	marks := map[string]bool{hunks[0].Hash: true}
+	// renderSegment expects prefixed keys (segIdx:hash)
+	marks := map[string]bool{fmt.Sprintf("0:%s", hunks[0].Hash): true}
 
-	body, _, _ := renderSegment(seg, views[0], 0, marks, 0, nil, nil, nil, 0, false)
+	body, _, _ := renderSegment(seg, views[0], 0, 0, marks, 0, nil, nil, nil, 0, false)
 
 	if !strings.Contains(body, "[✓]") {
 		t.Errorf("expected marked hunk '[✓]' in output:\n%s", body)
@@ -159,7 +160,7 @@ func TestRenderSegmentFocusedHunk(t *testing.T) {
 	views := seg.Class.Views()
 
 	// Hunk 0 in this segment is focused
-	body, _, _ := renderSegment(seg, views[0], 0, nil, 0, nil, nil, nil, 0, false)
+	body, _, _ := renderSegment(seg, views[0], 0, 0, nil, 0, nil, nil, nil, 0, false)
 
 	// Focused hunks get reverse-video rendering (the style wraps the header)
 	// We can't easily test the ANSI codes, but we can verify the hunk is rendered
@@ -168,7 +169,7 @@ func TestRenderSegmentFocusedHunk(t *testing.T) {
 	}
 
 	// Hunk 1 (doesn't exist — only one hunk) so no focus
-	body2, _, _ := renderSegment(seg, views[0], 0, nil, 1, nil, nil, nil, 0, false)
+	body2, _, _ := renderSegment(seg, views[0], 0, 0, nil, 1, nil, nil, nil, 0, false)
 	// Both should contain the hunk, just different styling
 	if !strings.Contains(body2, "@@") {
 		t.Errorf("expected hunk header in output:\n%s", body2)

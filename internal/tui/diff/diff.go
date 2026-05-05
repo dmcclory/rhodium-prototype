@@ -264,7 +264,7 @@ func (m *Model) Footer() string {
 			continue
 		}
 		total++
-		if m.marks[h.Hash] {
+		if m.marks[markKey(m.hunks, i, h, m.segmented)] {
 			marked++
 		}
 		if i <= m.hunkIdx {
@@ -358,7 +358,7 @@ func (m *Model) Open(b Brain, pr *gh.PR, fc gh.FileChange, ghInline []gh.Comment
 	m.notes = b.NotesForFile(pr.Repo, pr.Number, fc.Path)
 	m.resolvedNotes = b.ResolvedNotesForFile(pr.Repo, pr.Number, fc.Path)
 	m.ghInline = ghInline
-	m.hunkIdx = firstUnmarked(m.hunks, m.marks)
+	m.hunkIdx = firstUnmarked(m.hunks, m.marks, false)
 	m.redraw()
 	m.jumpToHunk()
 
@@ -527,7 +527,7 @@ func (m *Model) onCatchUpLoaded(b Brain, msg CatchUpLoadedMsg) tea.Cmd {
 	m.catchUpPatch = deltaFC.Patch
 	m.hunks = corediff.ParseHunks(deltaFC.Patch)
 	m.marks = b.HunkMarks(m.pr.Repo, m.pr.Number, m.file)
-	m.hunkIdx = firstUnmarked(m.hunks, m.marks)
+	m.hunkIdx = firstUnmarked(m.hunks, m.marks, false)
 	m.redraw()
 	m.jumpToHunk()
 	return statusCmd(fmt.Sprintf("catch-up [%s]: f1→f2 since %s  (d: full diff)", corediff.ClassB1B2, shortSHA(m.catchUpOldHead)))
@@ -573,7 +573,10 @@ func (m *Model) onDiamondClassified(b Brain, msg DiamondClassifiedMsg) tea.Cmd {
 		m.segmented = true
 	}
 	m.marks = b.HunkMarks(m.pr.Repo, m.pr.Number, m.file)
-	m.hunkIdx = firstUnmarked(m.hunks, m.marks)
+	if m.segmented && len(m.marks) > 0 {
+		m.marks = prefixMarks(m.hunks, m.marks)
+	}
+	m.hunkIdx = firstUnmarked(m.hunks, m.marks, m.segmented)
 
 	var status string
 	if m.segmented {
@@ -641,14 +644,70 @@ func (m *Model) jumpToHunk() {
 	m.vp.SetYOffset(target)
 }
 
+// segIdxForHunk returns the segment index for the hunk at position i
+// in the flat hunks list produced by SegmentHunks. Each synthetic
+// segment-header hunk advances the counter; markable hunks inherit the
+// current segment index.
+func segIdxForHunk(hunks []corediff.Hunk, i int) int {
+	segIdx := 0
+	for j := 0; j < i; j++ {
+		if !hunks[j].IsMarkable() {
+			segIdx++
+		}
+	}
+	return segIdx
+}
+
+// markKey returns the key to use in m.marks for the given hunk.
+// In segmented mode the key is "segIdx:hash" so marks are scoped to
+// their segment and survive view cycling within the same segment.
+func markKey(hunks []corediff.Hunk, i int, h corediff.Hunk, segmented bool) string {
+	if !segmented {
+		return h.Hash
+	}
+	return fmt.Sprintf("%d:%s", segIdxForHunk(hunks, i), h.Hash)
+}
+
+// prefixMarks converts brain-stored plain-hash marks to TUI-local
+// prefixed keys for the current segmented hunks list.
+func prefixMarks(hunks []corediff.Hunk, plain map[string]bool) map[string]bool {
+	prefixed := map[string]bool{}
+	for i, h := range hunks {
+		if !h.IsMarkable() {
+			continue
+		}
+		if plain[h.Hash] {
+			prefixed[fmt.Sprintf("%d:%s", segIdxForHunk(hunks, i), h.Hash)] = true
+		}
+	}
+	return prefixed
+}
+
+// flattenMarks strips TUI-local prefixes for brain storage.
+func (m *Model) flattenMarks() map[string]bool {
+	plain := map[string]bool{}
+	for k, v := range m.marks {
+		if m.segmented {
+			if idx := strings.Index(k, ":"); idx >= 0 {
+				plain[k[idx+1:]] = v
+			} else {
+				plain[k] = v
+			}
+		} else {
+			plain[k] = v
+		}
+	}
+	return plain
+}
+
 func (m *Model) allMarked() bool {
 	any := false
-	for _, h := range m.hunks {
+	for i, h := range m.hunks {
 		if !h.IsMarkable() {
 			continue
 		}
 		any = true
-		if !m.marks[h.Hash] {
+		if !m.marks[markKey(m.hunks, i, h, m.segmented)] {
 			return false
 		}
 	}
@@ -792,7 +851,7 @@ func (m *Model) saveMarks(b Brain) tea.Cmd {
 	if m.pr == nil || m.file == "" {
 		return nil
 	}
-	if err := b.SetHunkMarks(m.pr.Repo, m.pr.Number, m.file, m.marks); err != nil {
+	if err := b.SetHunkMarks(m.pr.Repo, m.pr.Number, m.file, m.flattenMarks()); err != nil {
 		return statusCmd("save error: " + err.Error())
 	}
 	if m.pr.HeadSHA != "" {
@@ -817,12 +876,16 @@ func filterInlineForPath(all []gh.Comment, path string) []gh.Comment {
 	return out
 }
 
-func firstUnmarked(hunks []corediff.Hunk, marks map[string]bool) int {
+func firstUnmarked(hunks []corediff.Hunk, marks map[string]bool, segmented bool) int {
 	for i, h := range hunks {
 		if !h.IsMarkable() {
 			continue
 		}
-		if !marks[h.Hash] {
+		key := h.Hash
+		if segmented {
+			key = fmt.Sprintf("%d:%s", segIdxForHunk(hunks, i), h.Hash)
+		}
+		if !marks[key] {
 			return i
 		}
 	}
