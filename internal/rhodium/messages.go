@@ -136,3 +136,6 @@ type remoteRefreshTickMsg struct{}
 // markFullyReviewedMsg requests the app call Brain.MarkFullyReviewed for
 // the currently-open PR. Emitted by the files view's `M` binding.
 type markFullyReviewedMsg struct{}
+
+// statusMsg sets the footer status line from a background goroutine.
+type statusMsg struct{ Text string }

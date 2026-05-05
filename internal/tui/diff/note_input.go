@@ -57,10 +57,14 @@ func (m *Model) updateNotingKeys(b Brain, msg tea.KeyMsg) tea.Cmd {
 			)
 		}
 		var err error
+		baseSHA := ""
+		if m.pr != nil {
+			baseSHA = m.pr.HeadSHA
+		}
 		if urgency != "" || assignee != "" {
-			err = b.SaveNoteWithUrgency(m.pr.Repo, m.pr.Number, m.file, m.noteLineNo, m.noteLineHash, body, urgency, assignee)
+			err = b.SaveNoteWithUrgency(m.pr.Repo, m.pr.Number, m.file, m.noteLineNo, m.noteLineHash, body, urgency, assignee, baseSHA)
 		} else {
-			err = b.SaveNote(m.pr.Repo, m.pr.Number, m.file, m.noteLineNo, m.noteLineHash, body)
+			err = b.SaveNote(m.pr.Repo, m.pr.Number, m.file, m.noteLineNo, m.noteLineHash, body, baseSHA)
 		}
 		if err != nil {
 			return statusCmd("save note: " + err.Error())

@@ -25,6 +25,13 @@ func (m *Model) updateKeys(b Brain, msg tea.KeyMsg, globals []keys.Binding) tea.
 		}
 		return nil
 	}
+	if m.showingResolved {
+		switch msg.String() {
+		case "esc":
+			m.hideResolved()
+			return nil
+		}
+	}
 	if cmd, matched := keys.Dispatch(msg.String(), false, m.bindings(b), globals); matched {
 		return cmd
 	}
@@ -108,8 +115,13 @@ func (m *Model) navBindings() []keys.Binding {
 		},
 		{
 			Name: "advance", Keys: []string{"enter", "right"},
-			Desc: "back to files (when all marked)", Group: "Navigate",
+			Desc: "reveal resolved / back to files", Group: "Navigate",
 			Action: func() tea.Cmd {
+				// If cursor is on a line with resolved notes, reveal them.
+				if cmd := m.showResolvedAtCursor(); cmd != nil {
+					return cmd
+				}
+				// Otherwise fall back to leaving.
 				if m.allMarked() {
 					return func() tea.Msg { return LeavingMsg{} }
 				}

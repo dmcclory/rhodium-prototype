@@ -21,9 +21,14 @@ var (
 	lineNumStyle     = lipgloss.NewStyle().Faint(true)
 	noteStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 	cursorStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+	resolvedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244")) // muted gray
 )
 
 var cursorIndicator = cursorStyle.Render("▸ ")
+
+// resolvedIndicator is the subtle glyph shown in the gutter when a line
+// has resolved (stale or manually resolved) notes.
+var resolvedIndicator = resolvedStyle.Render("↺")
 
 func notesByLine(notes []brain.Note) map[int][]brain.Note {
 	m := map[int][]brain.Note{}
@@ -120,8 +125,9 @@ func parseHunkRange(header string) hunkRange {
 // reverse-video header so you can see what `space` / `up` / `down` will
 // act on. Returns the rendered body and a parallel slice with each
 // hunk's header line offset for SetYOffset-based navigation.
-func renderHunks(hunks []corediff.Hunk, marks map[string]bool, focusedIdx int, notes []brain.Note, ghInline []gh.Comment, cursorLine int) (string, []int, []int) {
+func renderHunks(hunks []corediff.Hunk, marks map[string]bool, focusedIdx int, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
 	byLine := notesByLine(notes)
+	resolvedByLine := notesByLine(resolvedNotes)
 	ghByLine := ghInlineByLine(ghInline, notes)
 	var b strings.Builder
 	var lineMap []int
@@ -169,11 +175,45 @@ func renderHunks(hunks []corediff.Hunk, marks map[string]bool, focusedIdx int, n
 				if gl, ok := ghByLine[cur]; ok {
 					renderGHInlineLines(&b, gl, &lineNum, &lineMap)
 				}
+				// Resolved notes: show inline when expanded, or a subtle
+				// indicator when collapsed.
+				if rn, ok := resolvedByLine[cur]; ok && len(rn) > 0 {
+					if showingResolved {
+						renderResolvedLines(&b, rn, &lineNum, &lineMap)
+					} else {
+						b.WriteString(resolvedIndicator + "\n")
+						lineMap = append(lineMap, 0)
+						lineNum++
+					}
+				}
 				fileLine++
 			}
 		}
 	}
 	return b.String(), hunkLines, lineMap
+}
+
+// renderResolvedLines emits resolved notes in a muted style. These are
+// notes that were either manually resolved or auto-resolved as stale.
+func renderResolvedLines(b *strings.Builder, notes []brain.Note, lineNum *int, lineMap *[]int) {
+	for _, n := range notes {
+		lines := strings.Split(n.Body, "\n")
+		stale := ""
+		if n.BaseSHA != "" {
+			stale = " [stale]"
+		}
+		for i, line := range lines {
+			prefix := "  ┃ "
+			if i == 0 {
+				prefix = fmt.Sprintf("  ┃ RH: %s%s", line, stale)
+				line = ""
+			}
+			rendered := prefix + line
+			b.WriteString(resolvedStyle.Render(rendered) + "\n")
+			*lineMap = append(*lineMap, 0)
+			*lineNum++
+		}
+	}
 }
 
 func colorDiffLine(line string) string {
@@ -194,13 +234,15 @@ func colorDiffLine(line string) string {
 // inline. Unchanged lines show with line numbers; additions are green,
 // deletions red. Hunk headers with mark indicators are shown at each
 // change boundary.
-func renderFullFile(fileContent string, hunks []corediff.Hunk, marks map[string]bool, focusedIdx int, notes []brain.Note, ghInline []gh.Comment, cursorLine int) (string, []int, []int) {
+func renderFullFile(fileContent string, hunks []corediff.Hunk, marks map[string]bool, focusedIdx int, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
 	fileLines := splitFileLines(fileContent)
 	parsed := parseHunksWithRanges(hunks)
 
 	fb := &fullFileBuilder{
 		byLine:     notesByLine(notes),
 		ghByLine:   ghInlineByLine(ghInline, notes),
+		resolvedByLine: notesByLine(resolvedNotes),
+		showingResolved: showingResolved,
 		gutterW:    len(fmt.Sprintf("%d", len(fileLines)+100)),
 		cursorLine: cursorLine,
 	}
@@ -280,6 +322,8 @@ type fullFileBuilder struct {
 	cursorLine int
 	byLine     map[int][]brain.Note
 	ghByLine   map[int][]gh.Comment
+	resolvedByLine map[int][]brain.Note
+	showingResolved bool
 }
 
 func (f *fullFileBuilder) writeLine(num int, text string) {
@@ -306,6 +350,16 @@ func (f *fullFileBuilder) emitNotes(fileLineNo int) {
 	}
 	if gl, ok := f.ghByLine[fileLineNo]; ok {
 		renderGHInlineLines(&f.b, gl, &f.outputLine, &f.lineMap)
+	}
+	// Resolved notes: show inline when expanded, or a subtle indicator.
+	if rn, ok := f.resolvedByLine[fileLineNo]; ok && len(rn) > 0 {
+		if f.showingResolved {
+			renderResolvedLines(&f.b, rn, &f.outputLine, &f.lineMap)
+		} else {
+			f.b.WriteString(resolvedIndicator + "\n")
+			f.lineMap = append(f.lineMap, 0)
+			f.outputLine++
+		}
 	}
 }
 

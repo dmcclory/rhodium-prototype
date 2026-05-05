@@ -39,8 +39,9 @@ type Brain interface {
 	IsScrutinized(repo string, num int) bool
 	SetHunkMarks(repo string, num int, path string, marks map[string]bool) error
 	SetFileReviewed(repo string, num int, path, head, base string, kind brain.MarkKind) error
-	SaveNote(repo string, num int, path string, lineNo int, hash, body string) error
-	SaveNoteWithUrgency(repo string, num int, path string, lineNo int, hash, body string, urgency brain.Urgency, assignee string) error
+	SaveNote(repo string, num int, path string, lineNo int, hash, body, baseSHA string) error
+	SaveNoteWithUrgency(repo string, num int, path string, lineNo int, hash, body string, urgency brain.Urgency, assignee, baseSHA string) error
+	ResolvedNotesForFile(repo string, num int, path string) []brain.Note
 }
 
 // --- typed action messages emitted by the view ---
@@ -135,6 +136,7 @@ type Model struct {
 	hunks      []corediff.Hunk
 	marks      map[string]bool
 	notes      []brain.Note
+	resolvedNotes []brain.Note // resolved (manually or stale) notes for the open file
 	ghInline   []gh.Comment
 	hunkLines  []int
 	lineMap    []int
@@ -178,6 +180,10 @@ type Model struct {
 
 	BackRoute     router.Route
 	AgentBindings []keys.Binding
+
+	// Resolved note overlay state.
+	showingResolved bool        // true when a resolved note is revealed
+	resolvedLine    int         // line number of the revealed resolved note
 
 	// Forget-mode state: file was removed from the PR between reviews.
 	// Awaiting user ack before advancing the brain.
@@ -286,6 +292,16 @@ func (m *Model) Footer() string {
 		}
 	}
 	footer := fmt.Sprintf("hunk %d/%d  marked %d/%d%s  ↑/↓: nav  j/k: cursor  space: toggle+next  m: mark all  c: note  P: publish note  R: reply to thread  o: open  u: unmark  h: back", cur, total, marked, total, modeHint)
+	// Resolved notes hint when cursor is on a line with resolved notes.
+	if !m.noting && !m.forgetMode && !m.showingResolved {
+		curLine := m.cursorFileLine()
+		if curLine > 0 && len(m.resolvedNotesForLine(curLine)) > 0 {
+			footer += "  right/enter: show resolved"
+		}
+	}
+	if m.showingResolved {
+		footer += "  esc: hide resolved"
+	}
 	if m.forgetMode {
 		return "space/enter: ack and advance  esc/h: ack and back"
 	}
@@ -340,6 +356,7 @@ func (m *Model) Open(b Brain, pr *gh.PR, fc gh.FileChange, ghInline []gh.Comment
 	m.hunks = corediff.ParseHunks(fc.Patch)
 	m.marks = b.HunkMarks(pr.Repo, pr.Number, fc.Path)
 	m.notes = b.NotesForFile(pr.Repo, pr.Number, fc.Path)
+	m.resolvedNotes = b.ResolvedNotesForFile(pr.Repo, pr.Number, fc.Path)
 	m.ghInline = ghInline
 	m.hunkIdx = firstUnmarked(m.hunks, m.marks)
 	m.redraw()
@@ -425,6 +442,11 @@ func (m *Model) RefreshFromBrain(b Brain) bool {
 	newNotes := b.NotesForFile(m.pr.Repo, m.pr.Number, m.file)
 	if !reflect.DeepEqual(newNotes, m.notes) {
 		m.notes = newNotes
+		changed = true
+	}
+	newResolved := b.ResolvedNotesForFile(m.pr.Repo, m.pr.Number, m.file)
+	if !reflect.DeepEqual(newResolved, m.resolvedNotes) {
+		m.resolvedNotes = newResolved
 		changed = true
 	}
 	if changed {
@@ -598,9 +620,9 @@ func (m *Model) redraw() {
 	var lines []int
 	var lmap []int
 	if m.blob != "" && !m.segmented {
-		body, lines, lmap = renderFullFile(m.blob, m.hunks, m.marks, m.hunkIdx, m.notes, m.ghInline, m.cursorLine)
+		body, lines, lmap = renderFullFile(m.blob, m.hunks, m.marks, m.hunkIdx, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved)
 	} else {
-		body, lines, lmap = renderHunks(m.hunks, m.marks, m.hunkIdx, m.notes, m.ghInline, m.cursorLine)
+		body, lines, lmap = renderHunks(m.hunks, m.marks, m.hunkIdx, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved)
 	}
 	m.vp.SetContent(body)
 	m.diffLines = strings.Split(body, "\n")
@@ -721,6 +743,41 @@ func (m *Model) ackForget(b Brain) tea.Cmd {
 	b.SetFileReviewed(m.pr.Repo, m.pr.Number, m.file, m.pr.HeadSHA, m.pr.BaseSHA, brain.MarkAuto)
 	path := m.file
 	return func() tea.Msg { return FileMarkedDoneMsg{Path: path} }
+}
+
+// resolvedNotesForLine returns resolved notes anchored to a specific file
+// line number. Empty slice means none.
+func (m *Model) resolvedNotesForLine(lineNo int) []brain.Note {
+	var out []brain.Note
+	for _, n := range m.resolvedNotes {
+		if n.LineNo == lineNo {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// showResolvedAtCursor reveals any resolved notes on the current cursor
+// line. Returns nil if there's nothing to show.
+func (m *Model) showResolvedAtCursor() tea.Cmd {
+	lineNo := m.cursorFileLine()
+	if lineNo == 0 {
+		return nil
+	}
+	if len(m.resolvedNotesForLine(lineNo)) == 0 {
+		return nil
+	}
+	m.showingResolved = true
+	m.resolvedLine = lineNo
+	m.redraw()
+	return nil
+}
+
+// hideResolved dismisses the resolved note overlay.
+func (m *Model) hideResolved() {
+	m.showingResolved = false
+	m.resolvedLine = 0
+	m.redraw()
 }
 
 // --- persistence ---

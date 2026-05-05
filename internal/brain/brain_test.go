@@ -343,10 +343,10 @@ func TestBrainNotes(t *testing.T) {
 	}
 
 	// Save two notes on different lines.
-	if err := b.SaveNote("acme/web", 42, "src/main.go", 10, "hash1", "first note"); err != nil {
+	if err := b.SaveNote("acme/web", 42, "src/main.go", 10, "hash1", "first note", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.SaveNote("acme/web", 42, "src/main.go", 20, "hash2", "second note"); err != nil {
+	if err := b.SaveNote("acme/web", 42, "src/main.go", 20, "hash2", "second note", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -468,10 +468,10 @@ func TestBrainEventsNotes(t *testing.T) {
 	}
 	defer b.Close()
 
-	if err := b.SaveNote("acme/web", 42, "src/main.go", 10, "hash1", "hello"); err != nil {
+	if err := b.SaveNote("acme/web", 42, "src/main.go", 10, "hash1", "hello", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.SaveAgentNote("acme/web", 42, "src/main.go", 20, "from agent"); err != nil {
+	if err := b.SaveAgentNote("acme/web", 42, "src/main.go", 20, "from agent", ""); err != nil {
 		t.Fatal(err)
 	}
 

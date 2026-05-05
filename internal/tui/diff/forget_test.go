@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"strings"
 	"testing"
 
 	"rhodium/internal/brain"
@@ -30,10 +31,11 @@ func (m *mockBrain) SetFileReviewed(_ string, _ int, path, _, _ string, kind bra
 	m.lastKind = kind
 	return nil
 }
-func (m *mockBrain) SaveNote(string, int, string, int, string, string) error { return nil }
-func (m *mockBrain) SaveNoteWithUrgency(string, int, string, int, string, string, brain.Urgency, string) error {
+func (m *mockBrain) SaveNote(string, int, string, int, string, string, string) error { return nil }
+func (m *mockBrain) SaveNoteWithUrgency(string, int, string, int, string, string, brain.Urgency, string, string) error {
 	return nil
 }
+func (m *mockBrain) ResolvedNotesForFile(string, int, string) []brain.Note { return nil }
 
 func TestAckForget(t *testing.T) {
 	mb := &mockBrain{}
@@ -207,5 +209,111 @@ func TestFooterForgetMode(t *testing.T) {
 
 	if footer != "space/enter: ack and advance  esc/h: ack and back" {
 		t.Errorf("footer: got %q", footer)
+	}
+}
+
+// --- resolved notes ---
+
+func TestResolvedNotesForLine(t *testing.T) {
+	model := &Model{
+		resolvedNotes: []brain.Note{
+			{LineNo: 5, Body: "note on 5"},
+			{LineNo: 5, Body: "another on 5"},
+			{LineNo: 10, Body: "note on 10"},
+		},
+	}
+
+	// Line 5 has two notes.
+	n5 := model.resolvedNotesForLine(5)
+	if len(n5) != 2 {
+		t.Errorf("line 5: got %d notes, want 2", len(n5))
+	}
+
+	// Line 10 has one.
+	n10 := model.resolvedNotesForLine(10)
+	if len(n10) != 1 {
+		t.Errorf("line 10: got %d notes, want 1", len(n10))
+	}
+
+	// Line 3 has none.
+	n3 := model.resolvedNotesForLine(3)
+	if len(n3) != 0 {
+		t.Errorf("line 3: got %d notes, want 0", len(n3))
+	}
+}
+
+func TestShowResolvedAtCursor(t *testing.T) {
+	model := &Model{
+		resolvedNotes: []brain.Note{{LineNo: 42, Body: "stale note"}},
+		lineMap:       []int{0, 10, 20, 30, 42},
+		cursorLine:    4,
+	}
+
+	cmd := model.showResolvedAtCursor()
+
+	if !model.showingResolved {
+		t.Error("showingResolved should be true")
+	}
+	if model.resolvedLine != 42 {
+		t.Errorf("resolvedLine: got %d, want 42", model.resolvedLine)
+	}
+	if cmd != nil {
+		t.Error("expected nil cmd")
+	}
+}
+
+func TestShowResolvedAtCursorNoNotes(t *testing.T) {
+	model := &Model{
+		resolvedNotes: []brain.Note{{LineNo: 42, Body: "stale note"}},
+		lineMap:       []int{0, 10, 20, 30, 40},
+		cursorLine:    4,
+	}
+
+	cmd := model.showResolvedAtCursor()
+
+	if model.showingResolved {
+		t.Error("showingResolved should be false (no notes on cursor line)")
+	}
+	if cmd != nil {
+		t.Error("expected nil cmd when no notes")
+	}
+}
+
+func TestHideResolved(t *testing.T) {
+	model := &Model{showingResolved: true, resolvedLine: 42}
+	model.hideResolved()
+
+	if model.showingResolved {
+		t.Error("showingResolved should be false after hide")
+	}
+	if model.resolvedLine != 0 {
+		t.Errorf("resolvedLine: got %d, want 0", model.resolvedLine)
+	}
+}
+
+func TestFooterShowsResolvedHint(t *testing.T) {
+	model := &Model{
+		resolvedNotes: []brain.Note{{LineNo: 10, Body: "stale"}},
+		lineMap:       []int{0, 5, 10, 15},
+		cursorLine:    2,
+		hunkLines:     []int{0},
+	}
+
+	footer := model.Footer()
+	if !strings.Contains(footer, "right/enter: show resolved") {
+		t.Errorf("footer missing resolved hint:\n%s", footer)
+	}
+}
+
+func TestFooterShowsHideResolvedHint(t *testing.T) {
+	model := &Model{
+		showingResolved: true,
+		resolvedLine:    10,
+		hunkLines:       []int{0},
+	}
+
+	footer := model.Footer()
+	if !strings.Contains(footer, "esc: hide resolved") {
+		t.Errorf("footer missing hide hint:\n%s", footer)
 	}
 }

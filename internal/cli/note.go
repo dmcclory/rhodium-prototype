@@ -58,8 +58,10 @@ func cmdNote(args []string) error {
 	// new file), fall back to an empty hash — note is still anchored by line
 	// number and the drift detector will warn later.
 	var lineHash string
+	var headSHA string
 	for _, p := range b.CachedPRs() {
 		if p.Repo == repo && p.Number == num {
+			headSHA = p.HeadSHA
 			if content, err := gh.FetchFileAtRef(repo, path, p.HeadSHA); err == nil && content != "" {
 				lines := strings.Split(content, "\n")
 				if lineNo >= 1 && lineNo <= len(lines) {
@@ -80,9 +82,9 @@ func cmdNote(args []string) error {
 
 	// Save note with urgency/assignee if provided, otherwise use the simple path.
 	if urgency != "" || *assignee != "" {
-		return b.SaveNoteWithUrgency(repo, num, path, lineNo, lineHash, body, urgency, *assignee)
+		return b.SaveNoteWithUrgency(repo, num, path, lineNo, lineHash, body, urgency, *assignee, headSHA)
 	}
-	return b.SaveNote(repo, num, path, lineNo, lineHash, body)
+	return b.SaveNote(repo, num, path, lineNo, lineHash, body, headSHA)
 }
 
 // hashLine wraps a single string as a single-line "+"-prefixed hunk body

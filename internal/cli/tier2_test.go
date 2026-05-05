@@ -27,7 +27,7 @@ func TestCmdNoteSetUrgency(t *testing.T) {
 	b := newTestBrain(t)
 	defer b.Close()
 
-	b.SaveNote("acme/web", 42, "a.go", 10, "h1", "test note")
+	b.SaveNote("acme/web", 42, "a.go", 10, "h1", "test note", "")
 	note := b.NotesForFile("acme/web", 42, "a.go")[0]
 
 	if err := cmdNoteSetUrgency([]string{strconv.FormatInt(note.ID, 10), "now"}); err != nil {
@@ -79,7 +79,7 @@ func TestCmdNoteSetAssignee(t *testing.T) {
 	b := newTestBrain(t)
 	defer b.Close()
 
-	b.SaveNote("acme/web", 42, "a.go", 10, "h1", "test note")
+	b.SaveNote("acme/web", 42, "a.go", 10, "h1", "test note", "")
 	note := b.NotesForFile("acme/web", 42, "a.go")[0]
 
 	if err := cmdNoteSetAssignee([]string{strconv.FormatInt(note.ID, 10), "@alice"}); err != nil {
@@ -138,7 +138,7 @@ func TestCmdBrainClear(t *testing.T) {
 
 	b.SetHunkMarks("acme/web", 42, "a.go", map[string]bool{"h1": true})
 	b.SetFileReviewed("acme/web", 42, "a.go", "head1", "base1", brain.MarkUser)
-	b.SaveNote("acme/web", 42, "a.go", 10, "h1", "preserve me")
+	b.SaveNote("acme/web", 42, "a.go", 10, "h1", "preserve me", "")
 
 	if err := cmdBrainClear([]string{"acme/web#42"}); err != nil {
 		t.Fatal(err)
@@ -175,7 +175,7 @@ func TestCmdBrainForget(t *testing.T) {
 	b.SetFileReviewed("acme/web", 42, "a.go", "head1", "base1", brain.MarkUser)
 	b.SetHunkMarks("acme/web", 42, "b.go", map[string]bool{"h2": true})
 	b.SetFileReviewed("acme/web", 42, "b.go", "head1", "base1", brain.MarkUser)
-	b.SaveNote("acme/web", 42, "a.go", 10, "h1", "preserve me")
+	b.SaveNote("acme/web", 42, "a.go", 10, "h1", "preserve me", "")
 
 	if err := cmdBrainForget([]string{"acme/web#42", "a.go"}); err != nil {
 		t.Fatal(err)
@@ -202,8 +202,8 @@ func TestCmdNotesOutputShowsUrgency(t *testing.T) {
 	b := newTestBrain(t)
 	defer b.Close()
 
-	b.SaveNoteWithUrgency("acme/web", 42, "a.go", 10, "h1", "urgent!", brain.UrgencyNow, "@alice")
-	b.SaveNote("acme/web", 42, "a.go", 20, "h2", "plain note")
+	b.SaveNoteWithUrgency("acme/web", 42, "a.go", 10, "h1", "urgent!", brain.UrgencyNow, "@alice", "")
+	b.SaveNote("acme/web", 42, "a.go", 20, "h2", "plain note", "")
 
 	// Capture stdout.
 	old := os.Stdout

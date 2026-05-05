@@ -3,6 +3,8 @@ package brain
 import (
 	"path/filepath"
 	"testing"
+
+	"rhodium/internal/diff"
 )
 
 // --- Urgency type ---
@@ -53,13 +55,13 @@ func TestSaveNoteWithUrgency(t *testing.T) {
 	}
 	defer b.Close()
 
-	if err := b.SaveNoteWithUrgency("acme/web", 42, "a.go", 10, "h1", "urgent note", UrgencyNow, "@alice"); err != nil {
+	if err := b.SaveNoteWithUrgency("acme/web", 42, "a.go", 10, "h1", "urgent note", UrgencyNow, "@alice", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.SaveNoteWithUrgency("acme/web", 42, "a.go", 20, "h2", "someday note", UrgencySomeday, ""); err != nil {
+	if err := b.SaveNoteWithUrgency("acme/web", 42, "a.go", 20, "h2", "someday note", UrgencySomeday, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.SaveNote("acme/web", 42, "a.go", 30, "h3", "plain note"); err != nil {
+	if err := b.SaveNote("acme/web", 42, "a.go", 30, "h3", "plain note", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -94,7 +96,7 @@ func TestSaveNoteWithUrgencyJSON(t *testing.T) {
 	}
 	defer b.Close()
 
-	if err := b.SaveNoteWithUrgency("acme/web", 42, "a.go", 10, "h1", "body", UrgencyNow, "@bob"); err != nil {
+	if err := b.SaveNoteWithUrgency("acme/web", 42, "a.go", 10, "h1", "body", UrgencyNow, "@bob", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -124,7 +126,7 @@ func TestSetNoteUrgency(t *testing.T) {
 	}
 	defer b.Close()
 
-	if err := b.SaveNote("acme/web", 42, "a.go", 10, "h1", "note"); err != nil {
+	if err := b.SaveNote("acme/web", 42, "a.go", 10, "h1", "note", ""); err != nil {
 		t.Fatal(err)
 	}
 	note := b.NotesForFile("acme/web", 42, "a.go")[0]
@@ -172,7 +174,7 @@ func TestSetNoteAssignee(t *testing.T) {
 	}
 	defer b.Close()
 
-	if err := b.SaveNote("acme/web", 42, "a.go", 10, "h1", "note"); err != nil {
+	if err := b.SaveNote("acme/web", 42, "a.go", 10, "h1", "note", ""); err != nil {
 		t.Fatal(err)
 	}
 	note := b.NotesForFile("acme/web", 42, "a.go")[0]
@@ -213,11 +215,11 @@ func TestNoteCountByUrgency(t *testing.T) {
 	defer b.Close()
 
 	// Seed notes with different urgencies.
-	b.SaveNoteWithUrgency("acme/web", 42, "a.go", 1, "h1", "n1", UrgencyNow, "")
-	b.SaveNoteWithUrgency("acme/web", 42, "a.go", 2, "h2", "n2", UrgencyNow, "")
-	b.SaveNoteWithUrgency("acme/web", 42, "a.go", 3, "h3", "n3", UrgencySoon, "")
-	b.SaveNoteWithUrgency("acme/web", 42, "a.go", 4, "h4", "n4", UrgencySomeday, "")
-	b.SaveNote("acme/web", 42, "a.go", 5, "h5", "n5") // untriaged
+	b.SaveNoteWithUrgency("acme/web", 42, "a.go", 1, "h1", "n1", UrgencyNow, "", "")
+	b.SaveNoteWithUrgency("acme/web", 42, "a.go", 2, "h2", "n2", UrgencyNow, "", "")
+	b.SaveNoteWithUrgency("acme/web", 42, "a.go", 3, "h3", "n3", UrgencySoon, "", "")
+	b.SaveNoteWithUrgency("acme/web", 42, "a.go", 4, "h4", "n4", UrgencySomeday, "", "")
+	b.SaveNote("acme/web", 42, "a.go", 5, "h5", "n5", "") // untriaged
 
 	now, soon, someday, untriaged := b.NoteCountByUrgency("acme/web", 42)
 	if now != 2 {
@@ -263,7 +265,7 @@ func TestClearPR(t *testing.T) {
 	b.SetHunkMarks("acme/web", 42, "a.go", map[string]bool{"h1": true, "h2": true})
 	b.SetFileReviewed("acme/web", 42, "a.go", "head1", "base1", MarkUser)
 	b.SetFileReviewed("acme/web", 42, "b.go", "head1", "base1", MarkUser)
-	b.SaveNote("acme/web", 42, "a.go", 10, "h1", "important note")
+	b.SaveNote("acme/web", 42, "a.go", 10, "h1", "important note", "")
 
 	files := []SessionFile{{Path: "a.go"}, {Path: "b.go"}}
 	_, err = b.CreateSession("acme/web", 42, "head1", "base1", "head1", "base1", files)
@@ -332,7 +334,7 @@ func TestForgetFile(t *testing.T) {
 	b.SetFileReviewed("acme/web", 42, "a.go", "head1", "base1", MarkUser)
 	b.SetHunkMarks("acme/web", 42, "b.go", map[string]bool{"h2": true})
 	b.SetFileReviewed("acme/web", 42, "b.go", "head1", "base1", MarkUser)
-	b.SaveNote("acme/web", 42, "a.go", 10, "h1", "note on a")
+	b.SaveNote("acme/web", 42, "a.go", 10, "h1", "note on a", "")
 
 	// Forget a.go.
 	affected, err := b.ForgetFile("acme/web#42", "a.go")
@@ -416,5 +418,108 @@ func TestForgetFileSessionReset(t *testing.T) {
 		if sf.Path == "a.go" && sf.Done {
 			t.Error("a.go should be not-done after forget")
 		}
+	}
+}
+
+// --- lineIsStale ---
+
+func TestLineIsStale(t *testing.T) {
+	// Helper to compute the hash for a line.
+	lineHash := func(s string) string {
+		return diff.HashHunkBody([]string{"+" + s})
+	}
+
+	// Content: three lines.
+	content := "line one\nline two\nline three"
+
+	t.Run("matching hash is not stale", func(t *testing.T) {
+		n := Note{LineNo: 2, LineHash: lineHash("line two")}
+		if lineIsStale(n, content) {
+			t.Error("expected not stale")
+		}
+	})
+
+	t.Run("changed hash is stale", func(t *testing.T) {
+		n := Note{LineNo: 2, LineHash: lineHash("modified")}
+		if !lineIsStale(n, content) {
+			t.Error("expected stale")
+		}
+	})
+
+	t.Run("line out of range is stale", func(t *testing.T) {
+		n := Note{LineNo: 100, LineHash: lineHash("anything")}
+		if !lineIsStale(n, content) {
+			t.Error("expected stale for out-of-range line")
+		}
+	})
+
+	t.Run("line number zero is stale", func(t *testing.T) {
+		n := Note{LineNo: 0, LineHash: lineHash("anything")}
+		if !lineIsStale(n, content) {
+			t.Error("expected stale for line number 0")
+		}
+	})
+
+	t.Run("empty line hash is not stale", func(t *testing.T) {
+		n := Note{LineNo: 2, LineHash: ""}
+		if lineIsStale(n, content) {
+			t.Error("expected not stale when hash is empty")
+		}
+	})
+
+	t.Run("empty content with valid line number is stale", func(t *testing.T) {
+		n := Note{LineNo: 1, LineHash: lineHash("something")}
+		if !lineIsStale(n, "") {
+			t.Error("expected stale for empty content")
+		}
+	})
+}
+
+// --- base_sha persistence ---
+
+func TestNoteBaseSHAPersist(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RHODIUM_BRAIN", filepath.Join(dir, "brain.db"))
+
+	b, err := LoadBrain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	// Save a note with a base_sha.
+	if err := b.SaveNote("acme/web", 42, "a.go", 10, "h1", "note", "abc123"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify it round-trips through NotesForFile.
+	f := b.NotesForFile("acme/web", 42, "a.go")
+	if len(f) != 1 {
+		t.Fatalf("got %d notes, want 1", len(f))
+	}
+	if f[0].BaseSHA != "abc123" {
+		t.Errorf("NotesForFile: base_sha=%q, want abc123", f[0].BaseSHA)
+	}
+
+	// Verify it round-trips through NotesForPR.
+	p := b.NotesForPR("acme/web", 42, NotesActive)
+	if len(p) != 1 {
+		t.Fatalf("got %d notes, want 1", len(p))
+	}
+	if p[0].BaseSHA != "abc123" {
+		t.Errorf("NotesForPR: base_sha=%q, want abc123", p[0].BaseSHA)
+	}
+
+	// Verify persistence across reload.
+	b.Close()
+	b2, err := LoadBrain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b2.Close()
+
+	r := b2.NotesForFile("acme/web", 42, "a.go")
+	if len(r) != 1 || r[0].BaseSHA != "abc123" {
+		t.Errorf("after reload: base_sha=%q, want abc123", r[0].BaseSHA)
 	}
 }

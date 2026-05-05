@@ -171,6 +171,10 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pollTickMsg:
 		return a, a.onPollTick(m)
 
+	case statusMsg:
+		a.status.msg = m.Text
+		return a, nil
+
 	case router.NavigatedMsg:
 		a.layout.focus(m.To)
 		return a, nil
@@ -381,6 +385,27 @@ func (a *app) openPR(pr gh.PR) tea.Cmd {
 	if _, cached := a.cache.prComments[key]; !cached {
 		cmds = append(cmds, loadCommentsCmd(pr))
 	}
+	// Resolve stale notes in the background — non-blocking so the files
+	// view appears immediately.
+	repo, num := pr.Repo, pr.Number
+	headSHA := pr.HeadSHA
+	cmds = append(cmds, func() tea.Msg {
+		go func() {
+			n, err := a.brain.ResolveStaleNotes(repo, num, headSHA)
+			if err != nil {
+				program.Send(statusMsg{"stale notes: " + err.Error()})
+				return
+			}
+			if n > 0 {
+				suffix := "notes"
+				if n == 1 {
+					suffix = "note"
+				}
+				program.Send(statusMsg{fmt.Sprintf("resolved %d stale %s", n, suffix)})
+			}
+		}()
+		return nil
+	})
 	if _, cached := a.cache.prFiles[key]; cached {
 		a.rebuildFiles()
 		a.files.SetTitle(fmt.Sprintf("Files in %s#%d", pr.Repo, pr.Number))
@@ -716,7 +741,7 @@ func (a *app) onInlineNotesReady(msg inlineNotesReadyMsg) tea.Cmd {
 		if n.Path == "" || n.Line < 1 || n.Body == "" {
 			continue
 		}
-		if err := a.brain.SaveAgentNote(msg.pr.Repo, msg.pr.Number, n.Path, n.Line, n.Body); err != nil {
+		if err := a.brain.SaveAgentNote(msg.pr.Repo, msg.pr.Number, n.Path, n.Line, n.Body, msg.pr.HeadSHA); err != nil {
 			a.status.msg = fmt.Sprintf("%s: save note: %s", msg.action, err.Error())
 			return nil
 		}
