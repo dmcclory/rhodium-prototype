@@ -42,8 +42,8 @@ func runAction(a *app, action Action) (tea.Cmd, error) {
 		worktree = w
 	}
 
-	ctx := buildPromptCtx(pr, files, worktree)
-	prompt, err := renderPrompt(action, ctx)
+	ctx := BuildPromptCtx(pr, files, worktree)
+	prompt, err := RenderPrompt(action, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -119,16 +119,16 @@ func runInlineNotesAction(a *app, action Action, agent Agent, pr gh.PR, prompt s
 		if err := cmd.Run(); err != nil {
 			// Stash stdout for debugging — agents sometimes emit partial output
 			// even on non-zero exit.
-			stashAgentOutput(pr, action.Name, stdout.Bytes(), stderr.Bytes())
+			StashAgentOutput(pr, action.Name, stdout.Bytes(), stderr.Bytes())
 			return actionDoneMsg{
 				action: action.Name,
 				err:    fmt.Errorf("%s %v: %w (stderr: %s)", agent.Command, agent.OneshotArgs, err, strings.TrimSpace(stderr.String())),
 			}
 		}
 
-		notes, err := parseAgentNotes(stdout.Bytes())
+		notes, err := ParseAgentNotes(stdout.Bytes())
 		if err != nil {
-			stashAgentOutput(pr, action.Name, stdout.Bytes(), stderr.Bytes())
+			StashAgentOutput(pr, action.Name, stdout.Bytes(), stderr.Bytes())
 			return actionDoneMsg{action: action.Name, err: fmt.Errorf("parse agent output: %w", err)}
 		}
 		return inlineNotesReadyMsg{action: action.Name, pr: pr, notes: notes}
@@ -148,10 +148,10 @@ func writePromptFile(pr gh.PR, actionName, prompt string) (string, error) {
 	return path, nil
 }
 
-// stashAgentOutput writes raw agent output to ~/.cache/rhodium for
+// StashAgentOutput writes raw agent output to ~/.cache/rhodium for
 // post-mortem when the oneshot path fails to parse. Best-effort — ignores
 // errors since this is itself an error path.
-func stashAgentOutput(pr gh.PR, actionName string, stdout, stderr []byte) {
+func StashAgentOutput(pr gh.PR, actionName string, stdout, stderr []byte) {
 	dir := cacheDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
@@ -170,26 +170,26 @@ func cacheDir() string {
 	return filepath.Join(home, ".cache", "rhodium")
 }
 
-// agentNote is the on-wire shape we expect from an inline-notes action.
+// AgentNote is the on-wire shape we expect from an inline-notes action.
 // Line is in the new-file (post-change) numbering — same as human notes.
-type agentNote struct {
+type AgentNote struct {
 	Path string `json:"path"`
 	Line int    `json:"line"`
 	Body string `json:"body"`
 }
 
-// parseAgentNotes accepts either a bare JSON array or a JSON array wrapped
+// ParseAgentNotes accepts either a bare JSON array or a JSON array wrapped
 // in markdown fences (```json … ```), since agents frequently ignore "no
 // code fences" instructions. Everything outside the first [ and last ] is
 // treated as noise and stripped.
-func parseAgentNotes(raw []byte) ([]agentNote, error) {
+func ParseAgentNotes(raw []byte) ([]AgentNote, error) {
 	s := strings.TrimSpace(string(raw))
 	start := strings.Index(s, "[")
 	end := strings.LastIndex(s, "]")
 	if start < 0 || end < 0 || end < start {
 		return nil, fmt.Errorf("no JSON array found in output (%d bytes)", len(raw))
 	}
-	var notes []agentNote
+	var notes []AgentNote
 	if err := json.Unmarshal([]byte(s[start:end+1]), &notes); err != nil {
 		return nil, err
 	}

@@ -106,6 +106,7 @@ func (c *Config) MergeMethodResolved() string {
 func defaultAgents() []Agent {
 	return []Agent{
 		{Name: "claude", Command: "claude", OneshotArgs: []string{"-p"}},
+		{Name: "opencode", Command: "opencode", OneshotArgs: []string{"--prompt"}},
 	}
 }
 

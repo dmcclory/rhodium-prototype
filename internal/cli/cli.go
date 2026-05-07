@@ -48,6 +48,8 @@ func Run(args []string) error {
 		return cmdRepos(args[1:])
 	case "prs":
 		return cmdPRs(args[1:])
+	case "review":
+		return cmdReview(args[1:])
 	case "mark-fully-reviewed":
 		return cmdMarkFullyReviewed(args[1:])
 	case "help", "-h", "--help":
@@ -108,6 +110,7 @@ Usage:
   rhodium log <owner/repo#N> [--verbose]            per-commit review overlay for a PR
   rhodium repos [--sync]                            list cached repos with PR counts
   rhodium prs [owner/repo] [--sync]         list PRs for a repo (or all repos if omitted)
+  rhodium review --first-pass <owner/repo#N>  run agent first-pass review
   rhodium mark-fully-reviewed <owner/repo#N>        mark PR reviewed, no catch-up
 
 Flags:

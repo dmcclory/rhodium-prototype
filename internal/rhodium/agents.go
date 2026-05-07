@@ -23,9 +23,9 @@ type PromptCtx struct {
 	Patches  string // concatenated unified diffs, one file after another
 }
 
-// buildPromptCtx assembles a PromptCtx from a PR + its file list. Worktree is
+// BuildPromptCtx assembles a PromptCtx from a PR + its file list. Worktree is
 // passed in because non-worktree actions resolve it as "" and some do.
-func buildPromptCtx(pr gh.PR, files []gh.FileChange, worktree string) PromptCtx {
+func BuildPromptCtx(pr gh.PR, files []gh.FileChange, worktree string) PromptCtx {
 	return PromptCtx{
 		Repo:     pr.Repo,
 		Number:   pr.Number,
@@ -68,10 +68,10 @@ func renderPatches(files []gh.FileChange) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// renderPrompt executes the action's prompt template against ctx. Errors
+// RenderPrompt executes the action's prompt template against ctx. Errors
 // surface to the status bar — we don't fall back to a default template
 // because silent substitution would hide user config mistakes.
-func renderPrompt(action Action, ctx PromptCtx) (string, error) {
+func RenderPrompt(action Action, ctx PromptCtx) (string, error) {
 	tmpl, err := template.New(action.Name).Parse(action.PromptTemplate)
 	if err != nil {
 		return "", fmt.Errorf("parse prompt template for action %q: %w", action.Name, err)

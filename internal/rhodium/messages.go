@@ -77,7 +77,7 @@ type actionDoneMsg struct {
 type inlineNotesReadyMsg struct {
 	action string
 	pr     gh.PR
-	notes  []agentNote
+	notes  []AgentNote
 }
 
 // notePublishedMsg lands back on the update loop after a single inline
