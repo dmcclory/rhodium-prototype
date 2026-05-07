@@ -20,6 +20,7 @@ type prTodoItem struct {
 	Number  int      `json:"number"`
 	Title   string   `json:"title"`
 	Author  string   `json:"author"`
+	Status  string   `json:"status,omitempty"`
 	Tags    []string `json:"tags"`
 	Notes   int      `json:"notes,omitempty"`
 	CatchUp *struct {
@@ -34,10 +35,11 @@ type todoOutput struct {
 
 // cmdTodo prints a global dashboard of PRs with outstanding review work.
 func cmdTodo(args []string) error {
-	flags, _ := splitFlags(args)
+	flags, _ := splitFlags(args, "status")
 	fs := flag.NewFlagSet("todo", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit JSON")
 	sync := fs.Bool("sync", false, "refresh PR cache from GitHub first")
+	statusFilter := fs.String("status", "", "only show PRs with this custom status")
 	if err := fs.Parse(flags); err != nil {
 		return err
 	}
@@ -56,6 +58,27 @@ func cmdTodo(args []string) error {
 
 	items := buildTodoItems(b)
 	sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
+
+	// Attach statuses and filter.
+	if *statusFilter != "" {
+		statuses := b.PRStatusByKeys(collectKeys(items))
+		var filtered []prTodoItem
+		for i := range items {
+			if s, ok := statuses[items[i].Key]; ok && s == *statusFilter {
+				items[i].Status = s
+				filtered = append(filtered, items[i])
+			}
+		}
+		items = filtered
+	} else {
+		// Still attach statuses for display/JSON.
+		statuses := b.PRStatusByKeys(collectKeys(items))
+		for i := range items {
+			if s, ok := statuses[items[i].Key]; ok {
+				items[i].Status = s
+			}
+		}
+	}
 
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -159,6 +182,14 @@ func buildTodoItems(b *brain.Brain) []prTodoItem {
 	return items
 }
 
+func collectKeys(items []prTodoItem) []string {
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = it.Key
+	}
+	return out
+}
+
 func renderTodoText(items []prTodoItem, syncedThisRun bool) {
 	if len(items) == 0 {
 		fmt.Println("todo: nothing pending. (run with --sync to refresh the PR cache)")
@@ -167,6 +198,9 @@ func renderTodoText(items []prTodoItem, syncedThisRun bool) {
 	fmt.Printf("%d %s need attention\n\n", len(items), pluralize("PR", len(items)))
 	for _, it := range items {
 		var suffix []string
+		if it.Status != "" {
+			suffix = append(suffix, fmt.Sprintf("status:%s", it.Status))
+		}
 		if it.CatchUp != nil {
 			suffix = append(suffix, fmt.Sprintf("catch-up %d/%d", it.CatchUp.Done, it.CatchUp.Total))
 		}

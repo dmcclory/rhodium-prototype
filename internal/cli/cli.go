@@ -24,6 +24,8 @@ func Run(args []string) error {
 		return cmdTodo(args[1:])
 	case "state":
 		return cmdState(args[1:])
+	case "status":
+		return cmdStatus(args[1:])
 	case "mark":
 		return cmdMark(args[1:], true)
 	case "unmark":
@@ -96,6 +98,9 @@ Usage:
   rhodium notes <owner/repo#N>                      print notes for a PR
   rhodium todo                                      global dashboard (catch-up, unseen, notes)
   rhodium state <owner/repo#N>                      print full review state (files, hunks, marks, notes)
+  rhodium status <owner/repo#N> <text>              set a custom review status
+  rhodium status clear <owner/repo#N>               clear a custom status
+  rhodium status list                               list all custom statuses
   rhodium mark <owner/repo#N> <file> <hunk-hash>    mark a hunk as reviewed
   rhodium unmark <owner/repo#N> <file> <hunk-hash>  unmark a hunk
   rhodium note <owner/repo#N> <file> <line> <body>  add a note (body "-" reads from stdin)
@@ -114,8 +119,9 @@ Usage:
   rhodium mark-fully-reviewed <owner/repo#N>        mark PR reviewed, no catch-up
 
 Flags:
-  --json     emit JSON (notes, todo, state, brain log, brain show, log, prs)
+  --json     emit JSON (notes, todo, state, brain log, brain show, log, prs, status)
   --sync     refresh the PR cache from GitHub before printing (todo, repos, prs)
+  --status   (todo) filter to PRs with a given custom status
   --all      (notes) include resolved notes
   --urgency  (note only) set urgency: now, soon, someday
   --assignee (note only) set assignee

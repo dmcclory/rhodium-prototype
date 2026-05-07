@@ -26,7 +26,8 @@ const MaxTitleWidth = 60
 type Cols struct {
 	AnyScrutiny bool // any row is scrutinized → reserve 4 chars at the front
 	RepoNum     int
-	Status      int
+	SysStatus   int  // auto-derived status (CI, conflicts, review decision)
+	RevStatus   int  // user-set review status
 	Title       int
 	Author      int
 }
@@ -34,14 +35,19 @@ type Cols struct {
 // ComputeCols walks prs and returns the widest visible string per column.
 // anyScrutiny is the union of per-row scrutinized flags — the caller owns
 // its own item shape and supplies this directly.
-func ComputeCols(prs []gh.PR, anyScrutiny bool) Cols {
+// reviewStatuses maps pr_key → user-set status (may be nil).
+func ComputeCols(prs []gh.PR, anyScrutiny bool, reviewStatuses map[string]string) Cols {
 	c := Cols{AnyScrutiny: anyScrutiny}
 	for _, p := range prs {
 		if w := lipgloss.Width(RepoNumStr(p)); w > c.RepoNum {
 			c.RepoNum = w
 		}
-		if w := lipgloss.Width(RenderStatus(p)); w > c.Status {
-			c.Status = w
+		if w := lipgloss.Width(RenderSystemStatus(p)); w > c.SysStatus {
+			c.SysStatus = w
+		}
+		key := fmt.Sprintf("%s#%d", p.Repo, p.Number)
+		if w := lipgloss.Width(RenderReviewStatus(reviewStatuses[key])); w > c.RevStatus {
+			c.RevStatus = w
 		}
 		title := TruncateDisplay(p.Title, MaxTitleWidth)
 		if w := lipgloss.Width(title); w > c.Title {
@@ -62,14 +68,10 @@ func RepoNumStr(p gh.PR) string {
 
 var draftStyle = lipgloss.NewStyle().Faint(true)
 
-// RenderStatus produces the colored status badge for a PR row. Format:
-//
-//	[REVIEW_STATE] glyphs…
-//
-// where glyphs are CI rollup (✓ / ✗ / •) and a ⚠ for merge conflicts. An
-// empty string is returned when the PR has no review decision, isn't a
-// draft, and has no CI / conflict signals — keeps unimportant rows quiet.
-func RenderStatus(p gh.PR) string {
+// RenderSystemStatus produces the auto-derived status badge from a PR's
+// observable state (CI, review decision, mergeability, draft). Returns ""
+// when nothing noteworthy — keeps quiet rows quiet.
+func RenderSystemStatus(p gh.PR) string {
 	var labels []string
 	switch {
 	case p.IsDraft:
@@ -104,6 +106,15 @@ func RenderStatus(p gh.PR) string {
 		head += strings.Join(glyphs, "")
 	}
 	return head
+}
+
+// RenderReviewStatus produces the user-set review status badge. Returns ""
+// when no custom status is set.
+func RenderReviewStatus(status string) string {
+	if status == "" {
+		return ""
+	}
+	return styles.StatusReview.Render(status)
 }
 
 // PadRight right-pads s with spaces to the given visible width.

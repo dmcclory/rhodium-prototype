@@ -137,5 +137,13 @@ type remoteRefreshTickMsg struct{}
 // the currently-open PR. Emitted by the files view's `M` binding.
 type markFullyReviewedMsg struct{}
 
+// statusSetMsg lands back on the update loop after the user confirms a
+// custom status on a PR via the status picker.
+type statusSetMsg struct {
+	repo   string
+	prNum  int
+	status string
+}
+
 // statusMsg sets the footer status line from a background goroutine.
 type statusMsg struct{ Text string }

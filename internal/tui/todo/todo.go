@@ -37,21 +37,25 @@ type MergeMsg struct{ PR gh.PR }
 // comments first if needed.
 type CommentsMsg struct{ PR gh.PR }
 
+// OpenStatusMsg requests the app open the status picker modal for PR.
+type OpenStatusMsg struct{ PR gh.PR }
+
 // --- Item ---
 
 // Item is one compact row in the todo dashboard. Tags are populated in a
 // stable order ("in-progress", "catch-up", "unseen", "notes", "done") so
 // suffix rendering is deterministic.
 type Item struct {
-	PR        gh.PR
-	Tags      []string
-	Done      int        // catch-up progress — ignored when "catch-up" tag absent
-	Total     int        // catch-up total
-	Remaining int        // unseen hunk count — ignored when files not loaded
-	Notes     int        // notes attached to this PR
-	NotesNow  int        // "now" urgency notes
-	NotesSoon int        // "soon" urgency notes
-	Cols      prrow.Cols // populated by Rebuild for column alignment
+	PR           gh.PR
+	Tags         []string
+	ReviewStatus string // user-set custom status
+	Done         int    // catch-up progress — ignored when "catch-up" tag absent
+	Total        int    // catch-up total
+	Remaining    int    // unseen hunk count — ignored when files not loaded
+	Notes        int    // notes attached to this PR
+	NotesNow     int    // "now" urgency notes
+	NotesSoon    int    // "soon" urgency notes
+	Cols         prrow.Cols // populated by Rebuild for column alignment
 }
 
 func (i Item) Title() string {
@@ -88,7 +92,9 @@ func (i Item) Title() string {
 	var b strings.Builder
 	b.WriteString(prrow.PadRight(prrow.RepoNumStr(i.PR), i.Cols.RepoNum))
 	b.WriteString("  ")
-	b.WriteString(prrow.PadRight(prrow.RenderStatus(i.PR), i.Cols.Status))
+	b.WriteString(prrow.PadRight(prrow.RenderSystemStatus(i.PR), i.Cols.SysStatus))
+	b.WriteString("  ")
+	b.WriteString(prrow.PadRight(prrow.RenderReviewStatus(i.ReviewStatus), i.Cols.RevStatus))
 	b.WriteString("  ")
 	b.WriteString(prrow.PadRight(prrow.TruncateDisplay(i.PR.Title, prrow.MaxTitleWidth), i.Cols.Title))
 	b.WriteString("  ")
@@ -133,7 +139,7 @@ func (m *Model) Resize(w, h int) { m.list.SetSize(w, h) }
 func (m *Model) View() string { return m.list.View() }
 
 func (m *Model) Footer() string {
-	return "l/enter: open  A: approve/review  M: merge  C: comments  a: all PRs  q: quit"
+	return "l/enter: open  A: review  M: merge  C: comments  S: status  a: all PRs  q: quit"
 }
 
 // Update routes a message through bindings (with globals as fallback) then
@@ -188,6 +194,13 @@ func (m *Model) Bindings() []keys.Binding {
 				return m.emitSelected(func(pr gh.PR) tea.Msg { return CommentsMsg{PR: pr} })
 			},
 		},
+		{
+			Name: "status", Keys: []string{"S"},
+			Desc: "set review status on PR", Group: "View",
+			Action: func() tea.Cmd {
+				return m.emitSelected(func(pr gh.PR) tea.Msg { return OpenStatusMsg{PR: pr} })
+			},
+		},
 	}
 }
 
@@ -220,8 +233,9 @@ func (m *Model) Filtering() bool { return m.list.FilterState() == list.Filtering
 // app supplies the data because building Item requires brain queries this
 // package shouldn't have access to.
 //
+// reviewStatuses maps pr_key → user-set status (may be nil).
 // Selection is restored by PR key when possible.
-func (m *Model) Rebuild(actionable, newPRs []Item, outstandingCount int) {
+func (m *Model) Rebuild(actionable, newPRs []Item, outstandingCount int, reviewStatuses map[string]string) {
 	var savedKey string
 	if sel, ok := m.list.SelectedItem().(Item); ok {
 		savedKey = prKey(sel.PR)
@@ -234,12 +248,19 @@ func (m *Model) Rebuild(actionable, newPRs []Item, outstandingCount int) {
 	for _, it := range newPRs {
 		prs = append(prs, it.PR)
 	}
-	cols := prrow.ComputeCols(prs, false)
+	cols := prrow.ComputeCols(prs, false, reviewStatuses)
 	for i := range actionable {
 		actionable[i].Cols = cols
 	}
 	for i := range newPRs {
 		newPRs[i].Cols = cols
+	}
+	// Stamp review statuses onto items.
+	for i := range actionable {
+		actionable[i].ReviewStatus = reviewStatuses[prKey(actionable[i].PR)]
+	}
+	for i := range newPRs {
+		newPRs[i].ReviewStatus = reviewStatuses[prKey(newPRs[i].PR)]
 	}
 
 	var items []list.Item

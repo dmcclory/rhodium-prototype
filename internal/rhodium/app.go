@@ -14,6 +14,7 @@ import (
 	"rhodium/internal/tui/prs"
 	"rhodium/internal/tui/review"
 	"rhodium/internal/tui/router"
+	statuspicker "rhodium/internal/tui/status"
 	"rhodium/internal/tui/styles"
 	"rhodium/internal/tui/todo"
 	"time"
@@ -69,6 +70,9 @@ type app struct {
 	review review.Model
 	merge  merge.Model
 
+	// status picker modal — app level so any list view can open it.
+	statusPicker statuspicker.Model
+
 	// cache holds GitHub-fetched data shared across views.
 	cache cache
 
@@ -91,8 +95,9 @@ func newApp(cfg *Config, b *brain.Brain) *app {
 		diff:     tuidiff.New(),
 		comments: comments.New(),
 		help:     help.New(),
-		review:   review.New(),
-		merge:    merge.New(),
+		review:       review.New(),
+		merge:        merge.New(),
+		statusPicker: statuspicker.New(cfg.StatusesResolved()),
 		cache:    newCache(),
 		session:  newSession(),
 	}
@@ -159,6 +164,8 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case review.StatusMsg:
 		a.status.msg = m.Text
 		return a, nil
+	case statuspicker.StatusSetMsg:
+		return a, a.onStatusSet(m)
 	case merge.SubmittedMsg:
 		return a, a.onMergeSubmitted(m)
 	case merge.StatusMsg:
@@ -183,6 +190,8 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.openPR(m.PR)
 	case todo.ReviewMsg:
 		return a, a.review.OpenFor(m.PR)
+	case todo.OpenStatusMsg:
+		return a, a.openStatusPicker(m.PR)
 	case todo.MergeMsg:
 		return a, a.merge.OpenFor(m.PR, gh.MergeMethod(a.cfg.MergeMethodResolved()))
 	case todo.CommentsMsg:
@@ -202,6 +211,8 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.openPR(m.PR)
 	case prs.ReviewMsg:
 		return a, a.review.OpenFor(m.PR)
+	case prs.OpenStatusMsg:
+		return a, a.openStatusPicker(m.PR)
 	case prs.MergeMsg:
 		return a, a.merge.OpenFor(m.PR, gh.MergeMethod(a.cfg.MergeMethodResolved()))
 	case prs.CommentsMsg:
@@ -242,6 +253,9 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.merge.Active {
 			return a, a.merge.Update(m)
 		}
+		if a.statusPicker.Active {
+			return a, a.statusPicker.Update(m)
+		}
 		return a, a.routeKey(m)
 	}
 
@@ -271,6 +285,9 @@ func (a *app) View() string {
 	}
 	if a.merge.Active {
 		rendered = centerOverlay(rendered, a.merge.Render(), a.layout.width, a.layout.height)
+	}
+	if a.statusPicker.Active {
+		rendered = centerOverlay(rendered, a.statusPicker.Render(), a.layout.width, a.layout.height)
 	}
 	if a.help.Open {
 		rendered = centerOverlay(rendered, a.renderHelp(), a.layout.width, a.layout.height)
@@ -514,7 +531,7 @@ func (a *app) rebuildTodo() {
 		}
 		newPRs = append(newPRs, *ti)
 	}
-	a.todo.Rebuild(actionable, newPRs, a.outstandingPRCount())
+	a.todo.Rebuild(actionable, newPRs, a.outstandingPRCount(), a.brain.PRStatusByKeys(collectTodoKeys(actionable, newPRs)))
 }
 
 // buildTodoItem returns a todo.Item for pr if it needs attention, or nil
@@ -629,6 +646,9 @@ func (a *app) footer() string {
 	}
 	if a.merge.Active {
 		return a.merge.Footer()
+	}
+	if a.statusPicker.Active {
+		return a.statusPicker.Footer()
 	}
 	switch a.layout.activeView {
 	case router.RouteTodo:
@@ -993,5 +1013,26 @@ func (a *app) onMarkFullyReviewed(msg files.MarkFullyReviewedMsg) tea.Cmd {
 	a.rebuildFiles()
 	a.rebuildPRs()
 	a.status.msg = fmt.Sprintf("marked %s#%d reviewed — %d files", pr.Repo, pr.Number, len(msg.Paths))
+	return nil
+}
+
+func (a *app) openStatusPicker(pr gh.PR) tea.Cmd {
+	current := a.brain.PRStatus(pr.Repo, pr.Number)
+	a.statusPicker = statuspicker.New(a.cfg.StatusesResolved())
+	a.statusPicker.OpenFor(pr, current)
+	return nil
+}
+
+func (a *app) onStatusSet(msg statuspicker.StatusSetMsg) tea.Cmd {
+	if err := a.brain.SetPRStatus(msg.Repo, msg.PRNum, msg.Status); err != nil {
+		a.status.msg = "status: " + err.Error()
+		return nil
+	}
+	if msg.Status == "" {
+		a.status.msg = fmt.Sprintf("%s#%d: status cleared", msg.Repo, msg.PRNum)
+	} else {
+		a.status.msg = fmt.Sprintf("%s#%d → %s", msg.Repo, msg.PRNum, msg.Status)
+	}
+	a.rebuildPRs()
 	return nil
 }

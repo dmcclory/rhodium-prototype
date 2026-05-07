@@ -38,16 +38,20 @@ type CommentsMsg struct{ PR gh.PR }
 // — keeps brain mutation out of view code.
 type ScrutinyToggleMsg struct{ PR gh.PR }
 
+// OpenStatusMsg requests the app open the status picker modal for PR.
+type OpenStatusMsg struct{ PR gh.PR }
+
 // --- Item ---
 
 // Item is one row in the PR list. The app populates these via Rebuild so
 // this package stays unaware of brain state.
 type Item struct {
-	PR          gh.PR
-	Summary     string // e.g. "3 new", "✓ caught up, ↻ 2/5"
-	NoteCount   int
-	Scrutinized bool
-	Cols        prrow.Cols // populated by Rebuild for column alignment
+	PR           gh.PR
+	Summary      string // e.g. "3 new", "✓ caught up, ↻ 2/5"
+	NoteCount    int
+	Scrutinized  bool
+	ReviewStatus string // user-set custom status
+	Cols         prrow.Cols // populated by Rebuild for column alignment
 }
 
 func (i Item) Title() string {
@@ -61,7 +65,9 @@ func (i Item) Title() string {
 	}
 	b.WriteString(prrow.PadRight(prrow.RepoNumStr(i.PR), i.Cols.RepoNum))
 	b.WriteString("  ")
-	b.WriteString(prrow.PadRight(prrow.RenderStatus(i.PR), i.Cols.Status))
+	b.WriteString(prrow.PadRight(prrow.RenderSystemStatus(i.PR), i.Cols.SysStatus))
+	b.WriteString("  ")
+	b.WriteString(prrow.PadRight(prrow.RenderReviewStatus(i.ReviewStatus), i.Cols.RevStatus))
 	b.WriteString("  ")
 	b.WriteString(prrow.PadRight(truncate(i.PR.Title, prrow.MaxTitleWidth), i.Cols.Title))
 	b.WriteString("  ")
@@ -110,7 +116,7 @@ func (m *Model) Resize(w, h int) { m.list.SetSize(w, h) }
 func (m *Model) View() string { return m.list.View() }
 
 func (m *Model) Footer() string {
-	return "l/enter: open  A: approve/review  M: merge  C: comments  s: scrutiny  h/esc: back to todo  q: quit"
+	return "l/enter: open  A: review  M: merge  C: comments  S: status  s: scrutiny  h/esc: back to todo  q: quit"
 }
 
 // Update routes a key through this view's bindings, falling back to globals,
@@ -166,6 +172,13 @@ func (m *Model) Bindings() []keys.Binding {
 			},
 		},
 		{
+			Name: "status", Keys: []string{"S"},
+			Desc: "set review status on PR", Group: "View",
+			Action: func() tea.Cmd {
+				return m.emitSelected(func(pr gh.PR) tea.Msg { return OpenStatusMsg{PR: pr} })
+			},
+		},
+		{
 			Name: "scrutiny", Keys: []string{"s"},
 			Desc: "toggle scrutiny on selected PR", Group: "View",
 			Action: func() tea.Cmd {
@@ -204,7 +217,9 @@ func (m *Model) SetTitle(title string) { m.list.Title = title }
 // "mine" / "in progress" / "new" sections. Column widths are computed
 // over the full set so columns line up across sections. Selection is
 // restored by repo+number when possible.
-func (m *Model) Rebuild(mine, inProgress, untouched []Item) {
+//
+// reviewStatuses maps pr_key → user-set status (may be nil).
+func (m *Model) Rebuild(mine, inProgress, untouched []Item, reviewStatuses map[string]string) {
 	var savedKey string
 	if sel, ok := m.list.SelectedItem().(Item); ok {
 		savedKey = prKey(sel.PR)
@@ -223,10 +238,11 @@ func (m *Model) Rebuild(mine, inProgress, untouched []Item) {
 			anyScrutiny = true
 		}
 	}
-	cols := prrow.ComputeCols(prs, anyScrutiny)
+	cols := prrow.ComputeCols(prs, anyScrutiny, reviewStatuses)
 	setCols := func(items []Item) {
 		for i := range items {
 			items[i].Cols = cols
+			items[i].ReviewStatus = reviewStatuses[prKey(items[i].PR)]
 		}
 	}
 	setCols(mine)

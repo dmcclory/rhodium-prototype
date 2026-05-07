@@ -6,6 +6,7 @@ import (
 	"rhodium/internal/brain"
 	"rhodium/internal/gh"
 	"rhodium/internal/tui/prs"
+	"rhodium/internal/tui/todo"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -58,7 +59,7 @@ func (a *app) rebuildPRs() {
 			untouched = append(untouched, it)
 		}
 	}
-	a.prs.Rebuild(mine, inProgress, untouched)
+	a.prs.Rebuild(mine, inProgress, untouched, a.brain.PRStatusByKeys(collectAllPRKeys(a)))
 	// Todo list is a filtered view over the same data — rebuild in lockstep.
 	a.rebuildTodo()
 }
@@ -99,4 +100,26 @@ func mergePRs(a *app, prs []gh.PR) []gh.PR {
 		added = append(added, p)
 	}
 	return added
+}
+
+// collectAllPRKeys returns the pr_keys for every PR in the cache.
+func collectAllPRKeys(a *app) []string {
+	keys := make([]string, len(a.cache.allPRs))
+	for i, pr := range a.cache.allPRs {
+		keys[i] = brain.PRKey(pr.Repo, pr.Number)
+	}
+	return keys
+}
+
+// collectTodoKeys returns the pr_keys for the given todo items.
+func collectTodoKeys(actionable, newPRs []todo.Item) []string {
+	n := len(actionable) + len(newPRs)
+	keys := make([]string, 0, n)
+	for _, it := range actionable {
+		keys = append(keys, brain.PRKey(it.PR.Repo, it.PR.Number))
+	}
+	for _, it := range newPRs {
+		keys = append(keys, brain.PRKey(it.PR.Repo, it.PR.Number))
+	}
+	return keys
 }

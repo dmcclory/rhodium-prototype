@@ -22,6 +22,9 @@ type Config struct {
 	// on startup when left blank.
 	GitHubUser string      `json:"github_user,omitempty"`
 	Merge      MergeConfig `json:"merge,omitempty"`
+	// Statuses is the list of review statuses the user can cycle through
+	// when setting a custom status on a PR. Empty → defaults below.
+	Statuses []string `json:"statuses,omitempty"`
 }
 
 // Agent is a coding-assistant binary (claude, opencode, etc). Actions pick
@@ -98,6 +101,30 @@ func (c *Config) MergeMethodResolved() string {
 		return c.Merge.DefaultMethod
 	}
 	return "squash"
+}
+
+// defaultStatuses ships built-in so the `S` status key works without user config.
+// The user can override entirely via config.statuses.
+func defaultStatuses() []string {
+	return []string{
+		"new",
+		"in-review",
+		"needs-changes",
+		"changes-made",
+		"approved",
+		"blocked",
+		"design-review",
+		"waiting-on-ci",
+		"ready-to-merge",
+	}
+}
+
+// StatusesResolved returns the effective status list (user config or defaults).
+func (c *Config) StatusesResolved() []string {
+	if len(c.Statuses) > 0 {
+		return c.Statuses
+	}
+	return defaultStatuses()
 }
 
 // defaultAgents / defaultActions ship built-in so the `t` chat and `f` first-pass
