@@ -46,18 +46,19 @@ type OpenStatusMsg struct{ PR gh.PR }
 // stable order ("in-progress", "catch-up", "unseen", "notes", "done") so
 // suffix rendering is deterministic.
 type Item struct {
-	PR           gh.PR
-	Tags         []string
-	ReviewStatus string // user-set custom status
-	Done         int    // catch-up progress — files done
-	Total        int    // catch-up total — files
-	LinesDone    int    // catch-up progress — lines done
-	LinesTotal   int    // catch-up total — lines
-	Remaining    int    // unseen hunk count — ignored when files not loaded
-	Notes        int    // notes attached to this PR
-	NotesNow     int    // "now" urgency notes
-	NotesSoon    int    // "soon" urgency notes
-	Cols         prrow.Cols // populated by Rebuild for column alignment
+	PR             gh.PR
+	Tags           []string
+	ReviewStatus   string // user-set custom status
+	Done           int    // catch-up progress — files done
+	Total          int    // catch-up total — files
+	LinesDone      int    // catch-up progress — lines done
+	LinesTotal     int    // catch-up total — lines
+	Remaining      int    // unseen hunk count — ignored when files not loaded
+	Notes          int    // notes attached to this PR
+	NotesNow       int    // "now" urgency notes
+	NotesSoon      int    // "soon" urgency notes
+	GHComments     int    // GitHub inline comments from other people
+	Cols           prrow.Cols // populated by Rebuild for column alignment
 }
 
 func (i Item) Title() string {
@@ -79,7 +80,7 @@ func (i Item) Title() string {
 		case "unseen":
 			suffix = append(suffix, "unseen")
 		case "notes":
-			parts := []string{fmt.Sprintf("%d notes", i.Notes)}
+			parts := []string{fmt.Sprintf("%d %s", i.Notes, prrow.Pluralize("note", i.Notes))}
 			urgencyParts := []string{}
 			if i.NotesNow > 0 {
 				urgencyParts = append(urgencyParts, fmt.Sprintf("!%d", i.NotesNow))
@@ -90,9 +91,14 @@ func (i Item) Title() string {
 			if len(urgencyParts) > 0 {
 				parts = append(parts, strings.Join(urgencyParts, " "))
 			}
-			suffix = append(suffix, strings.Join(parts, " "))
+			if i.GHComments > 0 {
+				parts = append(parts, fmt.Sprintf("%d %s", i.GHComments, prrow.Pluralize("comment", i.GHComments)))
+			}
+			suffix = append(suffix, strings.Join(parts, ", "))
 		case "done":
 			suffix = append(suffix, "✓ done")
+		case "comments":
+			suffix = append(suffix, fmt.Sprintf("%d %s", i.GHComments, prrow.Pluralize("comment", i.GHComments)))
 		}
 	}
 	var b strings.Builder

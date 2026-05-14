@@ -29,6 +29,17 @@ func (a *app) rebuildFiles() {
 	pr := a.session.selectedPR
 	cached := a.cache.prFiles[brain.PRKey(pr.Repo, pr.Number)]
 	reviewedStates := a.brain.AllFileReviewedStates(pr.Repo, pr.Number)
+
+	// Count GitHub inline comments per file path.
+	ghCommentsByPath := map[string]int{}
+	if comments, ok := a.cache.prComments[brain.PRKey(pr.Repo, pr.Number)]; ok {
+		for _, c := range comments {
+			if c.Type == "inline" && c.Path != "" {
+				ghCommentsByPath[c.Path]++
+			}
+		}
+	}
+
 	items := make([]files.Item, 0, len(cached))
 	for _, fc := range cached {
 		status := a.brain.Status(pr.Repo, pr.Number, fc)
@@ -36,10 +47,11 @@ func (a *app) rebuildFiles() {
 		s := reviewedStates[fc.Path]
 		catchUp := s.HeadSHA != "" && (s.HeadSHA != pr.HeadSHA || s.BaseSHA != pr.BaseSHA)
 		items = append(items, files.Item{
-			File:         fc,
-			Status:       status,
-			NoteCount:    nc,
-			NeedsCatchUp: catchUp,
+			File:           fc,
+			Status:         status,
+			NoteCount:      nc,
+			GHCommentCount: ghCommentsByPath[fc.Path],
+			NeedsCatchUp:   catchUp,
 		})
 	}
 	a.files.Rebuild(items)

@@ -20,9 +20,10 @@ func (a *app) rebuildPRs() {
 	var mine, inProgress, untouched []prs.Item
 	for _, pr := range a.cache.allPRs {
 		it := prs.Item{
-			PR:          pr,
-			NoteCount:   a.brain.NoteCountForPR(pr.Repo, pr.Number),
-			Scrutinized: a.brain.IsScrutinized(pr.Repo, pr.Number),
+			PR:             pr,
+			NoteCount:      a.brain.NoteCountForPR(pr.Repo, pr.Number),
+			GHCommentCount: a.ghCommentCount(pr.Repo, pr.Number),
+			Scrutinized:    a.brain.IsScrutinized(pr.Repo, pr.Number),
 		}
 		// A PR is "in progress" if the brain has any marks for it, even
 		// before we've fetched its file list. This keeps already-touched
@@ -125,4 +126,14 @@ func collectTodoKeys(actionable, newPRs []todo.Item) []string {
 		keys = append(keys, brain.PRKey(it.PR.Repo, it.PR.Number))
 	}
 	return keys
+}
+
+// ghCommentCount returns the number of GitHub comments cached for
+// a given PR. Returns 0 if comments haven't been fetched yet.
+func (a *app) ghCommentCount(repo string, num int) int {
+	comments, ok := a.cache.prComments[brain.PRKey(repo, num)]
+	if !ok {
+		return 0
+	}
+	return len(comments)
 }

@@ -46,12 +46,13 @@ type OpenStatusMsg struct{ PR gh.PR }
 // Item is one row in the PR list. The app populates these via Rebuild so
 // this package stays unaware of brain state.
 type Item struct {
-	PR           gh.PR
-	Summary      string // e.g. "3 new", "✓ caught up, ↻ 2/5"
-	NoteCount    int
-	Scrutinized  bool
-	ReviewStatus string // user-set custom status
-	Cols         prrow.Cols // populated by Rebuild for column alignment
+	PR             gh.PR
+	Summary        string // e.g. "3 new", "✓ caught up, ↻ 2/5"
+	NoteCount      int
+	GHCommentCount int
+	Scrutinized    bool
+	ReviewStatus   string // user-set custom status
+	Cols           prrow.Cols // populated by Rebuild for column alignment
 }
 
 func (i Item) Title() string {
@@ -77,7 +78,10 @@ func (i Item) Title() string {
 		parts = append(parts, i.Summary)
 	}
 	if i.NoteCount > 0 {
-		parts = append(parts, fmt.Sprintf("%d notes", i.NoteCount))
+		parts = append(parts, fmt.Sprintf("%d %s", i.NoteCount, prrow.Pluralize("note", i.NoteCount)))
+	}
+	if i.GHCommentCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s", i.GHCommentCount, prrow.Pluralize("comment", i.GHCommentCount)))
 	}
 	if len(parts) > 0 {
 		b.WriteString("  (")

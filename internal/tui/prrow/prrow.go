@@ -145,3 +145,11 @@ func TruncateDisplay(s string, w int) string {
 	}
 	return string(runes[:cut]) + "…"
 }
+
+// Pluralize returns word or word+"s" depending on n.
+func Pluralize(word string, n int) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
+}

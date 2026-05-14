@@ -12,6 +12,7 @@ import (
 	"rhodium/internal/brain"
 	"rhodium/internal/gh"
 	"rhodium/internal/tui/keys"
+	"rhodium/internal/tui/prrow"
 	"rhodium/internal/tui/router"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -48,10 +49,11 @@ type RebuildNotesMsg struct{}
 // Item is one row in the file list. The app populates these via Rebuild
 // so this package stays unaware of brain state.
 type Item struct {
-	File         gh.FileChange
-	Status       brain.FileStatus
-	NoteCount    int
-	NeedsCatchUp bool // PR head moved since this file was last reviewed
+	File            gh.FileChange
+	Status          brain.FileStatus
+	NoteCount       int // local Rhodium notes
+	GHCommentCount  int // GitHub inline comments from other people
+	NeedsCatchUp    bool // PR head moved since this file was last reviewed
 }
 
 func (i Item) Title() string {
@@ -59,8 +61,15 @@ func (i Item) Title() string {
 	if i.NeedsCatchUp {
 		s += "  ↻"
 	}
-	if i.NoteCount > 0 {
-		s += fmt.Sprintf("  (%d notes)", i.NoteCount)
+	if i.NoteCount > 0 || i.GHCommentCount > 0 {
+		parens := []string{}
+		if i.NoteCount > 0 {
+			parens = append(parens, fmt.Sprintf("%d %s", i.NoteCount, prrow.Pluralize("note", i.NoteCount)))
+		}
+		if i.GHCommentCount > 0 {
+			parens = append(parens, fmt.Sprintf("%d %s", i.GHCommentCount, prrow.Pluralize("comment", i.GHCommentCount)))
+		}
+		s += fmt.Sprintf("  (%s)", strings.Join(parens, ", "))
 	}
 	return s
 }

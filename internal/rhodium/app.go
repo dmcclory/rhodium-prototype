@@ -554,7 +554,7 @@ func (a *app) buildTodoItem(pr gh.PR) *todo.Item {
 		remaining = a.brain.UnseenCount(pr.Repo, pr.Number, files)
 	}
 
-	it := todo.Item{PR: pr, Notes: notes, NotesNow: now, NotesSoon: soon, Remaining: remaining}
+	it := todo.Item{PR: pr, Notes: notes, NotesNow: now, NotesSoon: soon, GHComments: a.ghCommentCount(pr.Repo, pr.Number), Remaining: remaining}
 	if touched && cu == nil {
 		if !filesLoaded || remaining > 0 {
 			it.Tags = append(it.Tags, "in-progress")
@@ -572,6 +572,8 @@ func (a *app) buildTodoItem(pr gh.PR) *todo.Item {
 	}
 	if notes > 0 {
 		it.Tags = append(it.Tags, "notes")
+	} else if a.ghCommentCount(pr.Repo, pr.Number) > 0 {
+		it.Tags = append(it.Tags, "comments")
 	}
 	return &it
 }
@@ -682,7 +684,22 @@ func (a *app) onPRsLoaded(msg prsLoadedMsg) tea.Cmd {
 	a.rebuildPRs()
 	a.prs.SetTitle(fmt.Sprintf("PRs (%d, loading files…)", len(a.cache.allPRs)))
 	go a.brain.SetPRCache(a.cache.allPRs)
-	return prefetchAllCmd(added)
+
+	// Prefetch comments for any PR that doesn't have them cached yet —
+	// this covers PRs restored from the brain cache at startup, which
+	// aren't in `added` and would otherwise go unfetched.
+	var needComments []gh.PR
+	for _, pr := range a.cache.allPRs {
+		if _, has := a.cache.prComments[brain.PRKey(pr.Repo, pr.Number)]; !has {
+			needComments = append(needComments, pr)
+		}
+	}
+
+	cmds := []tea.Cmd{prefetchAllCmd(added)}
+	if len(needComments) > 0 {
+		cmds = append(cmds, prefetchCommentsCmd(needComments))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (a *app) onFilesLoaded(msg filesLoadedMsg) tea.Cmd {
@@ -889,6 +906,7 @@ func (a *app) onCommentsLoaded(msg commentsLoadedMsg) tea.Cmd {
 		a.session.selectedPR.Repo == msg.repo && a.session.selectedPR.Number == msg.prNum {
 		a.diff.RefreshGHInline(msg.comments)
 	}
+	a.rebuildPRs()
 	return nil
 }
 
