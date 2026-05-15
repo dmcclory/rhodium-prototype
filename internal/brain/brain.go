@@ -65,6 +65,34 @@ func LoadBrain() (*Brain, error) {
 	return &Brain{db: db}, nil
 }
 
+// OpenForCLI opens the brain SQLite database WITHOUT running migrations.
+// CLI shell-outs use this so they don't race the live TUI's long-lived
+// handle: a tmux pane running an older rhodium from $PATH against a brain
+// already migrated by the TUI would otherwise trip checkBrainNotAhead and
+// mid-review the nvim plugin would lose access.
+//
+// Production code paths that NEED migrations (the TUI startup, and the
+// `brain` / `brain-clear` admin subcommands) keep calling LoadBrain.
+// Everything else should use OpenForCLI — the schema is whatever the most
+// recent TUI launch produced.
+func OpenForCLI() (*Brain, error) {
+	path, err := brainPath()
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	// busy_timeout=5000 (ms) tells SQLite to wait up to 5s for a write lock
+	// instead of returning SQLITE_BUSY immediately when the TUI holds the
+	// write side; CLI commands are short-lived so the wait is bounded.
+	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		return nil, fmt.Errorf("open brain db: %w", err)
+	}
+	return &Brain{db: db}, nil
+}
+
 func (b *Brain) Close() error {
 	return b.db.Close()
 }

@@ -22,7 +22,7 @@ func cmdMark(args []string, on bool) error {
 	}
 	path, hash := pos[1], pos[2]
 
-	b, err := brain.LoadBrain()
+	b, err := brain.OpenForCLI()
 	if err != nil {
 		return err
 	}

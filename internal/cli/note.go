@@ -48,7 +48,7 @@ func cmdNote(args []string) error {
 		return fmt.Errorf("empty note body")
 	}
 
-	b, err := brain.LoadBrain()
+	b, err := brain.OpenForCLI()
 	if err != nil {
 		return err
 	}

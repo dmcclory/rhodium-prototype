@@ -26,7 +26,7 @@ func cmdNotes(args []string) error {
 	if err != nil {
 		return err
 	}
-	b, err := brain.LoadBrain()
+	b, err := brain.OpenForCLI()
 	if err != nil {
 		return err
 	}

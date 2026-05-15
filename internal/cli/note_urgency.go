@@ -33,7 +33,7 @@ func cmdNoteSetUrgency(args []string) error {
 		return fmt.Errorf("unknown urgency %q — use now, soon, someday, or clear", pos[1])
 	}
 
-	b, err := brain.LoadBrain()
+	b, err := brain.OpenForCLI()
 	if err != nil {
 		return err
 	}
@@ -68,7 +68,7 @@ func cmdNoteSetAssignee(args []string) error {
 		assignee = pos[1]
 	}
 
-	b, err := brain.LoadBrain()
+	b, err := brain.OpenForCLI()
 	if err != nil {
 		return err
 	}

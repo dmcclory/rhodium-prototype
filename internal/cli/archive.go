@@ -50,7 +50,7 @@ func cmdArchiveOne(args []string) error {
 		return err
 	}
 
-	b, err := brain.LoadBrain()
+	b, err := brain.OpenForCLI()
 	if err != nil {
 		return err
 	}
@@ -87,7 +87,7 @@ func cmdArchiveList(args []string) error {
 	}
 	jsonOut := hasFlag(flags, "json")
 
-	b, err := brain.LoadBrain()
+	b, err := brain.OpenForCLI()
 	if err != nil {
 		return err
 	}
@@ -148,7 +148,7 @@ func cmdGC(args []string) error {
 		return err
 	}
 
-	b, err := brain.LoadBrain()
+	b, err := brain.OpenForCLI()
 	if err != nil {
 		return err
 	}

@@ -44,7 +44,7 @@ func cmdStatusSet(args []string) error {
 	}
 	status := pos[1]
 
-	b, err := brain.LoadBrain()
+	b, err := brain.OpenForCLI()
 	if err != nil {
 		return err
 	}
@@ -85,7 +85,7 @@ func cmdStatusClear(args []string) error {
 		return err
 	}
 
-	b, err := brain.LoadBrain()
+	b, err := brain.OpenForCLI()
 	if err != nil {
 		return err
 	}
@@ -119,7 +119,7 @@ func cmdStatusList(args []string) error {
 		return err
 	}
 
-	b, err := brain.LoadBrain()
+	b, err := brain.OpenForCLI()
 	if err != nil {
 		return err
 	}

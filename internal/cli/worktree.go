@@ -41,7 +41,7 @@ func cmdWorktreeStatus(args []string) error {
 		return err
 	}
 
-	b, err := brain.LoadBrain()
+	b, err := brain.OpenForCLI()
 	if err != nil {
 		return err
 	}
@@ -167,7 +167,7 @@ func cmdWorktreeRefresh(args []string) error {
 
 	if allFlag {
 		// Refresh all stale worktrees across cached PRs
-		b, err := brain.LoadBrain()
+		b, err := brain.OpenForCLI()
 		if err != nil {
 			return err
 		}

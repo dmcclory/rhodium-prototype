@@ -31,7 +31,7 @@ func cmdRepos(args []string) error {
 		return err
 	}
 
-	b, err := brain.LoadBrain()
+	b, err := brain.OpenForCLI()
 	if err != nil {
 		return err
 	}
@@ -95,7 +95,7 @@ func cmdPRs(args []string) error {
 		repo = pos[0]
 	}
 
-	b, err := brain.LoadBrain()
+	b, err := brain.OpenForCLI()
 	if err != nil {
 		return err
 	}

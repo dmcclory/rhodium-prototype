@@ -46,7 +46,7 @@ func cmdTodo(args []string) error {
 		return err
 	}
 
-	b, err := brain.LoadBrain()
+	b, err := brain.OpenForCLI()
 	if err != nil {
 		return err
 	}

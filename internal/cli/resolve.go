@@ -13,7 +13,7 @@ func cmdResolve(args []string) error {
 	if len(pos) == 0 {
 		return fmt.Errorf("usage: rhodium resolve <note-id>...")
 	}
-	b, err := brain.LoadBrain()
+	b, err := brain.OpenForCLI()
 	if err != nil {
 		return err
 	}
