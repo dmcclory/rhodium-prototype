@@ -95,18 +95,28 @@ func runInteractiveAction(a *app, action Action, agent Agent, worktree string, p
 		}
 		a.status.msg = fmt.Sprintf("launching %s (%s)…", agent.Name, action.Name)
 		return tea.ExecProcess(cmd, func(err error) tea.Msg {
+			// The agent has exited — the prompt file is no longer needed.
+			os.Remove(promptPath)
 			return actionDoneMsg{action: action.Name, err: err}
 		}), nil
 	}
+
+	// For the tmux path we can't know when the agent exits, so append a
+	// shell `rm` after the command substitution: the shell evaluates
+	// `$(cat …)` before running the agent, so the file can be removed
+	// once the agent itself terminates inside the pane.
+	cmdline = fmt.Sprintf("%s; rm -f %s", cmdline, shellQuote(promptPath))
 
 	label := fmt.Sprintf("%s: %s", action.Name, brain.PRKey(pr.Repo, pr.Number))
 	a.status.msg = fmt.Sprintf("launching %s (%s) in tmux pane", agent.Name, action.Name)
 	return func() tea.Msg {
 		paneID, err := spawnTmuxPane(a.cfg.TmuxMode(), worktree, label)
 		if err != nil {
+			os.Remove(promptPath)
 			return actionDoneMsg{action: action.Name, err: err}
 		}
 		if err := tmuxSendKeys(paneID, cmdline); err != nil {
+			os.Remove(promptPath)
 			return actionDoneMsg{action: action.Name, err: err}
 		}
 		return actionDoneMsg{action: action.Name}
@@ -145,16 +155,34 @@ func runInlineNotesAction(a *app, action Action, agent Agent, pr gh.PR, prompt s
 }
 
 // writePromptFile persists the rendered prompt to $TMPDIR so the tmux child
-// shell can read it via `$(cat …)`. Path is deterministic per (PR, action)
-// so repeated presses overwrite instead of piling up.
+// shell can read it via `$(cat …)`. Uses os.CreateTemp so the name is
+// unpredictable and the file is created with O_CREATE|O_EXCL — defeating
+// a co-located attacker who pre-creates the path as a symlink to a victim
+// file (the old deterministic path was symlink-followable). Repeat presses
+// no longer overwrite; the caller is responsible for cleaning up via
+// os.Remove once the tmux/sh consumer is done.
 func writePromptFile(pr gh.PR, actionName, prompt string) (string, error) {
-	safeKey := strings.ReplaceAll(brain.PRKey(pr.Repo, pr.Number), "/", "-")
-	name := fmt.Sprintf("rhodium-%s-%s.md", safeKey, actionName)
-	path := filepath.Join(os.TempDir(), name)
-	if err := os.WriteFile(path, []byte(prompt), 0o600); err != nil {
+	// pr/actionName are no longer baked into the filename now that
+	// O_CREATE|O_EXCL is doing the security work. They're kept in the
+	// signature for caller stability and potential future use (e.g.
+	// embedding a sanitized label as a temp-file prefix).
+	_ = pr
+	_ = actionName
+	// "rhodium-*.md" keeps the *.md suffix some editors / agents key on.
+	f, err := os.CreateTemp("", "rhodium-*.md")
+	if err != nil {
+		return "", fmt.Errorf("create prompt file: %w", err)
+	}
+	if _, err := f.WriteString(prompt); err != nil {
+		f.Close()
+		os.Remove(f.Name())
 		return "", fmt.Errorf("write prompt file: %w", err)
 	}
-	return path, nil
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", fmt.Errorf("close prompt file: %w", err)
+	}
+	return f.Name(), nil
 }
 
 // StashAgentOutput writes raw agent output to ~/.cache/rhodium for
