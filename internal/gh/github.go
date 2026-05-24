@@ -47,6 +47,10 @@ type PR struct {
 	IsDraft        bool
 	Mergeable      string // MERGEABLE, CONFLICTING, UNKNOWN, ""
 	CIStatus       string // SUCCESS, FAILURE, PENDING, ""
+
+	// UpdatedAt is the PR's last-activity timestamp from GitHub.
+	// Used by the refresh tick to gate expensive comment re-fetches.
+	UpdatedAt string // ISO8601, e.g. "2026-05-23T14:30:00Z"
 }
 
 type prListItem struct {
@@ -59,6 +63,7 @@ type prListItem struct {
 	Author     struct {
 		Login string `json:"login"`
 	} `json:"author"`
+	UpdatedAt           string                `json:"updatedAt"`
 	ReviewDecision    string                `json:"reviewDecision"`
 	IsDraft           bool                  `json:"isDraft"`
 	Mergeable         string                `json:"mergeable"`
@@ -82,7 +87,7 @@ func ListPRs(repo string) ([]PR, error) {
 func listPRsReal(repo string) ([]PR, error) {
 	out, err := exec.Command("gh", "pr", "list",
 		"--repo", repo,
-		"--json", "number,title,author,headRefOid,baseRefOid,body,state,reviewDecision,isDraft,mergeable,statusCheckRollup",
+		"--json", "number,title,author,headRefOid,baseRefOid,body,state,updatedAt,reviewDecision,isDraft,mergeable,statusCheckRollup",
 		"--limit", "50",
 	).Output()
 	if err != nil {
@@ -109,6 +114,7 @@ func listPRsReal(repo string) ([]PR, error) {
 			IsDraft:        it.IsDraft,
 			Mergeable:      it.Mergeable,
 			CIStatus:       rollupCIStatus(it.StatusCheckRollup),
+			UpdatedAt:      it.UpdatedAt,
 		})
 	}
 	return prs, nil

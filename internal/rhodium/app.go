@@ -932,6 +932,11 @@ func (a *app) onCommentsLoaded(msg commentsLoadedMsg) tea.Cmd {
 		return nil
 	}
 	a.cache.prComments[brain.PRKey(msg.repo, msg.prNum)] = msg.comments
+	// Record the PR's current updatedAt so the refresh tick can skip
+	// this PR if nothing has changed since the last fetch.
+	if pr := findPRByKey(a.cache.allPRs, msg.repo, msg.prNum); pr != nil && pr.UpdatedAt != "" {
+		a.cache.commentsLastSeenAt[brain.PRKey(msg.repo, msg.prNum)] = pr.UpdatedAt
+	}
 	go func() {
 		if _, err := a.brain.SyncGitHubComments(msg.repo, msg.prNum); err != nil {
 			// Silent — comments are already in-memory; the brain sync
@@ -990,17 +995,23 @@ func pollTickCmd(gen int) tea.Cmd {
 
 // onRemoteRefreshTick refreshes GitHub-side data periodically: re-list
 // PRs for every configured repo (catches review-decision / CI / merge
-// state drift) and re-fetch comments for every PR with a populated
-// comment cache (catches incoming replies). Reschedules itself so the
-// loop runs for the lifetime of the program.
+// state drift) and re-fetch comments only for PRs whose updatedAt has
+// changed since the last fetch (catches incoming replies without burning
+// API calls on quiet PRs). Reschedules itself so the loop runs for the
+// lifetime of the program.
 func (a *app) onRemoteRefreshTick() tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(a.cfg.Repos)+len(a.cache.prComments)+1)
 	for _, repo := range a.cfg.Repos {
 		cmds = append(cmds, refreshRepoCmd(repo))
 	}
 	for _, pr := range a.cache.allPRs {
-		if _, has := a.cache.prComments[brain.PRKey(pr.Repo, pr.Number)]; has {
-			cmds = append(cmds, loadCommentsCmd(pr))
+		key := brain.PRKey(pr.Repo, pr.Number)
+		if _, has := a.cache.prComments[key]; has {
+			// Only re-fetch comments if the PR has seen new activity.
+			// updatedAt is free — it comes from the `gh pr list` call above.
+			if a.cache.commentsLastSeenAt[key] != pr.UpdatedAt {
+				cmds = append(cmds, loadCommentsCmd(pr))
+			}
 		}
 	}
 	cmds = append(cmds, remoteRefreshTickCmd())
@@ -1009,6 +1020,17 @@ func (a *app) onRemoteRefreshTick() tea.Cmd {
 
 func remoteRefreshTickCmd() tea.Cmd {
 	return tea.Tick(remoteRefreshInterval, func(time.Time) tea.Msg { return remoteRefreshTickMsg{} })
+}
+
+// findPRByKey looks up a PR in the cache by repo+number. Returns nil if
+// not found — call sites use the result opportunistically.
+func findPRByKey(prs []gh.PR, repo string, num int) *gh.PR {
+	for i := range prs {
+		if prs[i].Repo == repo && prs[i].Number == num {
+			return &prs[i]
+		}
+	}
+	return nil
 }
 
 // onPRsRefreshed merges a fresh per-repo listing into the cache: live-
@@ -1048,6 +1070,7 @@ func (a *app) onPRsRefreshed(msg prsRefreshedMsg) tea.Cmd {
 		existing.IsDraft = fresh.IsDraft
 		existing.Mergeable = fresh.Mergeable
 		existing.CIStatus = fresh.CIStatus
+		existing.UpdatedAt = fresh.UpdatedAt
 		kept = append(kept, existing)
 		delete(byKey, key)
 	}

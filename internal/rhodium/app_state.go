@@ -16,13 +16,19 @@ type cache struct {
 	freshKeys  map[string]bool            // confirmed by latest repo listing
 	prFiles    map[string][]gh.FileChange // pr key → file list
 	prComments map[string][]gh.Comment    // pr key → comments
+
+	// commentsLastSeenAt records the PR's GitHub updatedAt at the time
+	// comments were last fetched. Used by the remote-refresh tick to skip
+	// comment re-fetches for PRs that haven't had new activity.
+	commentsLastSeenAt map[string]string // pr key → updatedAt timestamp
 }
 
 func newCache() cache {
 	return cache{
-		freshKeys:  map[string]bool{},
-		prFiles:    map[string][]gh.FileChange{},
-		prComments: map[string][]gh.Comment{},
+		freshKeys:          map[string]bool{},
+		prFiles:            map[string][]gh.FileChange{},
+		prComments:         map[string][]gh.Comment{},
+		commentsLastSeenAt: map[string]string{},
 	}
 }
 
@@ -60,6 +66,8 @@ func (c *cache) dropPR(key string) {
 	c.allPRs = kept
 	delete(c.freshKeys, key)
 	delete(c.prFiles, key)
+	delete(c.prComments, key)
+	delete(c.commentsLastSeenAt, key)
 }
 
 // session is the user's current navigation state — what PR they're on,
