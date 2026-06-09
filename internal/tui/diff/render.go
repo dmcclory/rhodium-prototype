@@ -273,7 +273,7 @@ func colorDiffLine(line string) string {
 // inline. Unchanged lines show with line numbers; additions are green,
 // deletions red. Hunk headers with mark indicators are shown at each
 // change boundary.
-func renderFullFile(fileContent string, hunks []corediff.Hunk, marks map[string]int, focusedIdx int, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
+func renderFullFile(fileContent string, hunks []corediff.Hunk, marks map[string]int, focusedIdx int, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool, highlighter *corediff.Highlighter) (string, []int, []int) {
 	fileLines := splitFileLines(fileContent)
 	parsed := parseHunksWithRanges(hunks)
 
@@ -284,6 +284,7 @@ func renderFullFile(fileContent string, hunks []corediff.Hunk, marks map[string]
 		showingResolved: showingResolved,
 		gutterW:    len(fmt.Sprintf("%d", len(fileLines)+100)),
 		cursorLine: cursorLine,
+		highlighter: highlighter,
 	}
 	hunkLineOffsets := make([]int, len(hunks))
 	newFileLine := 1
@@ -363,6 +364,7 @@ type fullFileBuilder struct {
 	ghByLine   map[int][]gh.Comment
 	resolvedByLine map[int][]brain.Note
 	showingResolved bool
+	highlighter *corediff.Highlighter // nil if highlighting not yet available
 }
 
 func (f *fullFileBuilder) writeLine(num int, text string) {
@@ -371,6 +373,15 @@ func (f *fullFileBuilder) writeLine(num int, text string) {
 		prefix = cursorIndicator
 	}
 	gutter := lineNumStyle.Render(fmt.Sprintf("%*d", f.gutterW, num))
+	// Use highlighted line if available.
+	if f.highlighter != nil {
+		if hl := f.highlighter.Line(num - 1); hl != "" {
+			f.b.WriteString(prefix + gutter + "  " + hl + "\n")
+			f.lineMap = append(f.lineMap, num)
+			f.outputLine++
+			return
+		}
+	}
 	f.b.WriteString(prefix + gutter + "  " + text + "\n")
 	f.lineMap = append(f.lineMap, num)
 	f.outputLine++
@@ -415,6 +426,22 @@ func (f *fullFileBuilder) emitHunkBody(bodyLines []string, newFileLine int) int 
 		}
 		switch line[0] {
 		case '+':
+			// Use highlighted line if available, otherwise fall back to green.
+			if f.highlighter != nil {
+				if hl := f.highlighter.Line(newFileLine - 1); hl != "" {
+					prefix := ""
+					if f.outputLine == f.cursorLine {
+						prefix = cursorIndicator
+					}
+					gutter := lineNumStyle.Render(fmt.Sprintf("%*d", f.gutterW, newFileLine))
+					f.b.WriteString(prefix + gutter + "  " + hl + "\n")
+					f.lineMap = append(f.lineMap, newFileLine)
+					f.outputLine++
+					f.emitNotes(newFileLine)
+					newFileLine++
+					continue
+				}
+			}
 			f.writeLine(newFileLine, addedStyle.Render(line[1:]))
 			f.emitNotes(newFileLine)
 			newFileLine++

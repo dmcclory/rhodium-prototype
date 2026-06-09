@@ -121,6 +121,12 @@ type BlobLoadedMsg struct {
 	Err     error
 }
 
+// HighlighterLoadedMsg lands when syntax highlighting finishes.
+type HighlighterLoadedMsg struct {
+	Highlighter *corediff.Highlighter
+	Err         error
+}
+
 // --- Model ---
 
 // Model is the diff view's state. The app sets BackRoute when entering
@@ -146,6 +152,7 @@ type Model struct {
 	diffLines  []string
 	blob       string
 	fullPatch  string // original PR-level patch from Open — used to restore full diff after toggling out of catch-up
+	highlighter *corediff.Highlighter // syntax-highlighted lines, nil until async load completes
 
 	// Chunk mode state.
 	chunks         []corediff.Chunk
@@ -368,6 +375,8 @@ func (m *Model) Update(msg tea.Msg, b Brain, globals []keys.Binding) tea.Cmd {
 		return m.onDiamondClassified(b, msg)
 	case BlobLoadedMsg:
 		return m.onBlobLoaded(msg)
+	case HighlighterLoadedMsg:
+		return m.onHighlighterLoaded(msg)
 	case tea.KeyMsg:
 		if m.noting {
 			return m.updateNotingKeys(b, msg)
@@ -771,6 +780,28 @@ func (m *Model) onBlobLoaded(msg BlobLoadedMsg) tea.Cmd {
 		m.redraw()
 		m.jumpToHunk()
 	}
+
+	// Kick off async syntax highlighting.
+	if m.file != "" {
+		content := msg.Content
+		filename := m.file
+		cmd := func() tea.Msg {
+			hl := corediff.NewHighlighter(content, filename)
+			return HighlighterLoadedMsg{Highlighter: hl}
+		}
+		return tea.Batch(cmd)
+	}
+	return nil
+}
+
+func (m *Model) onHighlighterLoaded(msg HighlighterLoadedMsg) tea.Cmd {
+	if msg.Err != nil {
+		return statusCmd("highlight: " + msg.Err.Error())
+	}
+	m.highlighter = msg.Highlighter
+	if !m.catchUpMode {
+		m.redraw()
+	}
 	return nil
 }
 
@@ -793,7 +824,7 @@ func (m *Model) redraw() {
 	if m.chunkMode && len(m.chunks) > 0 {
 		body, lines, lmap = renderChunks(m.chunks, m.hunks, m.marks, m.chunkIdx, m.expandedChunks, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved)
 	} else if m.blob != "" && !m.segmented {
-		body, lines, lmap = renderFullFile(m.blob, m.hunks, m.marks, m.hunkIdx, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved)
+		body, lines, lmap = renderFullFile(m.blob, m.hunks, m.marks, m.hunkIdx, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved, m.highlighter)
 	} else if m.segmented {
 		body, lines, lmap = renderSegmented(m.segments, m.segmentViewIdx, m.storyMode, m.marks, m.hunkIdx, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved)
 	} else {
