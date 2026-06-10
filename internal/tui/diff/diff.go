@@ -822,7 +822,7 @@ func (m *Model) redraw() {
 	var lines []int
 	var lmap []int
 	if m.chunkMode && len(m.chunks) > 0 {
-		body, lines, lmap = renderChunks(m.chunks, m.hunks, m.marks, m.chunkIdx, m.expandedChunks, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved)
+		body, lines, lmap = renderChunks(m.chunks, m.hunks, m.marks, m.chunkIdx, m.expandedChunks, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved, m.highlighter)
 	} else if m.blob != "" && !m.segmented {
 		body, lines, lmap = renderFullFile(m.blob, m.hunks, m.marks, m.hunkIdx, m.notes, m.resolvedNotes, m.ghInline, m.cursorLine, m.showingResolved, m.highlighter)
 	} else if m.segmented {

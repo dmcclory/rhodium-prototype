@@ -670,7 +670,7 @@ func ParseHunkRange(header string) (newStart, newCount int) {
 // shows as a single line when collapsed, or as a header + its diff lines
 // when expanded. Returns the rendered body, per-chunk output-line offsets,
 // and the output→file-line map.
-func renderChunks(chunks []corediff.Chunk, hunks []corediff.Hunk, marks map[string]int, focusedChunkIdx int, expanded map[int]bool, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool) (string, []int, []int) {
+func renderChunks(chunks []corediff.Chunk, hunks []corediff.Hunk, marks map[string]int, focusedChunkIdx int, expanded map[int]bool, notes []brain.Note, resolvedNotes []brain.Note, ghInline []gh.Comment, cursorLine int, showingResolved bool, highlighter *corediff.Highlighter) (string, []int, []int) {
 	byLine := notesByLine(notes)
 	resolvedByLine := notesByLine(resolvedNotes)
 	ghByLine := ghInlineByLine(ghInline, notes)
@@ -732,6 +732,38 @@ func renderChunks(chunks []corediff.Chunk, hunks []corediff.Hunk, marks map[stri
 					if lineNum == cursorLine {
 						prefix = cursorIndicator
 					}
+
+					if len(line) > 0 && line[0] == '+' && highlighter != nil {
+						if hl := highlighter.Line(fileLine - 1); hl != "" {
+							b.WriteString(prefix + "  " + hl + "\n")
+							if isFile {
+								lineMap = append(lineMap, cur)
+							} else {
+								lineMap = append(lineMap, 0)
+							}
+							lineNum++
+							if isFile {
+								if ln, ok := byLine[cur]; ok {
+									renderNoteLines(&b, ln, &lineNum, &lineMap)
+								}
+								if gl, ok := ghByLine[cur]; ok {
+									renderGHInlineLines(&b, gl, &lineNum, &lineMap)
+								}
+								if rn, ok := resolvedByLine[cur]; ok && len(rn) > 0 {
+									if showingResolved {
+										renderResolvedLines(&b, rn, &lineNum, &lineMap)
+									} else {
+										b.WriteString(resolvedIndicator + "\n")
+										lineMap = append(lineMap, 0)
+										lineNum++
+									}
+								}
+								fileLine++
+							}
+							continue
+						}
+					}
+
 					b.WriteString(prefix + "  " + colorDiffLine(line) + "\n")
 					if isFile {
 						lineMap = append(lineMap, cur)
