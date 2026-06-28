@@ -3,10 +3,11 @@ package rhodium
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"rhodium/internal/shellout"
 )
 
 // resolveWorktree returns the local path for a per-PR worktree, creating it
@@ -56,15 +57,12 @@ func resolveWorktree(cfg *Config, repo string, number int) (string, error) {
 	// Create a detached worktree first; gh pr checkout will set the branch.
 	// Using a detached HEAD avoids branch-name collisions and fork-PR edge
 	// cases that plain `git worktree add <branch>` can't handle.
-	addCmd := exec.Command("git", "-C", sourcePath, "worktree", "add", "--detach", target)
-	if out, err := addCmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("git worktree add: %w — %s", err, strings.TrimSpace(string(out)))
+	if _, err := shellout.Combined("git", "-C", sourcePath, "worktree", "add", "--detach", target); err != nil {
+		return "", fmt.Errorf("git worktree add: %w", err)
 	}
 
-	checkoutCmd := exec.Command("gh", "pr", "checkout", fmt.Sprintf("%d", number), "--repo", repo)
-	checkoutCmd.Dir = target
-	if out, err := checkoutCmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("gh pr checkout %d: %w — %s", number, err, strings.TrimSpace(string(out)))
+	if _, err := (shellout.Spec{Dir: target}).Combined("gh", "pr", "checkout", fmt.Sprintf("%d", number), "--repo", repo); err != nil {
+		return "", fmt.Errorf("gh pr checkout %d: %w", number, err)
 	}
 
 	return target, nil
@@ -72,24 +70,24 @@ func resolveWorktree(cfg *Config, repo string, number int) (string, error) {
 
 // worktreeHEAD returns the current HEAD SHA of an existing worktree.
 func worktreeHEAD(path string) (string, error) {
-	out, err := exec.Command("git", "-C", path, "rev-parse", "HEAD").CombinedOutput()
+	out, err := shellout.Combined("git", "-C", path, "rev-parse", "HEAD")
 	if err != nil {
-		return "", fmt.Errorf("git rev-parse HEAD in %s: %w — %s", path, err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("git rev-parse HEAD in %s: %w", path, err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return strings.TrimSpace(out), nil
 }
 
 // currentPRHEAD asks GitHub for the PR's current head SHA via `gh pr view`.
 func currentPRHEAD(repo string, number int) (string, error) {
-	out, err := exec.Command("gh", "pr", "view", fmt.Sprintf("%d", number),
+	out, err := shellout.Combined("gh", "pr", "view", fmt.Sprintf("%d", number),
 		"--repo", repo,
 		"--json", "headRefOid",
 		"--jq", ".headRefOid",
-	).CombinedOutput()
+	)
 	if err != nil {
-		return "", fmt.Errorf("gh pr view %s#%d: %w — %s", repo, number, err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("gh pr view %s#%d: %w", repo, number, err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return strings.TrimSpace(out), nil
 }
 
 // WorktreeStatus describes the state of a PR's worktree.
@@ -156,11 +154,11 @@ func InspectWorktree(cfg *Config, repo string, number int) WorktreeStatus {
 // countCommitsBehind returns how many commits the worktree is behind the target ref.
 // Best-effort — returns 0 on failure (we still know it's stale from the SHA mismatch).
 func countCommitsBehind(worktreePath, targetSHA string) (int, error) {
-	out, err := exec.Command("git", "-C", worktreePath, "rev-list", "--count", fmt.Sprintf("HEAD..%s", targetSHA)).CombinedOutput()
+	out, err := shellout.Combined("git", "-C", worktreePath, "rev-list", "--count", fmt.Sprintf("HEAD..%s", targetSHA))
 	if err != nil {
 		return 0, err
 	}
-	count := strings.TrimSpace(string(out))
+	count := strings.TrimSpace(out)
 	n, err := strconv.Atoi(count)
 	if err != nil {
 		return 0, err
@@ -170,15 +168,15 @@ func countCommitsBehind(worktreePath, targetSHA string) (int, error) {
 
 // fetchPRState returns the PR's state (open/merged/closed) from GitHub.
 func fetchPRState(repo string, number int) string {
-	out, err := exec.Command("gh", "pr", "view", fmt.Sprintf("%d", number),
+	out, err := shellout.Combined("gh", "pr", "view", fmt.Sprintf("%d", number),
 		"--repo", repo,
 		"--json", "state",
 		"--jq", ".state",
-	).CombinedOutput()
+	)
 	if err != nil {
 		return "unknown"
 	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(out)
 }
 
 // isStale is a lightweight check: does the worktree's HEAD differ from the
@@ -247,19 +245,17 @@ func RefreshWorktree(cfg *Config, repo string, number int) error {
 	}
 
 	// Fetch latest from origin in the source repo
-	if out, err := exec.Command("git", "-C", sourcePath, "fetch", "origin").CombinedOutput(); err != nil {
-		return fmt.Errorf("git fetch: %w — %s", err, strings.TrimSpace(string(out)))
+	if _, err := shellout.Combined("git", "-C", sourcePath, "fetch", "origin"); err != nil {
+		return fmt.Errorf("git fetch: %w", err)
 	}
 
 	// Checkout the PR's HEAD in the worktree
-	checkoutCmd := exec.Command("git", "-C", target, "fetch", "origin")
-	if out, err := checkoutCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("worktree git fetch: %w — %s", err, strings.TrimSpace(string(out)))
+	if _, err := shellout.Combined("git", "-C", target, "fetch", "origin"); err != nil {
+		return fmt.Errorf("worktree git fetch: %w", err)
 	}
 
 	// Hard reset to the PR's current HEAD
-	resetCmd := exec.Command("git", "-C", target, "reset", "--hard", prHead)
-	if _, err := resetCmd.CombinedOutput(); err != nil {
+	if _, err := shellout.Combined("git", "-C", target, "reset", "--hard", prHead); err != nil {
 		// If reset failed (e.g. detached HEAD issues), try full recreate
 		return recreateWorktree(cfg, sourcePath, repo, number, target)
 	}
@@ -271,8 +267,8 @@ func RefreshWorktree(cfg *Config, repo string, number int) error {
 // Use this as a fallback when refresh fails.
 func recreateWorktree(cfg *Config, sourcePath, repo string, number int, target string) error {
 	// Remove the old worktree
-	if out, err := exec.Command("git", "-C", sourcePath, "worktree", "remove", "--force", target).CombinedOutput(); err != nil {
-		return fmt.Errorf("git worktree remove: %w — %s", err, strings.TrimSpace(string(out)))
+	if _, err := shellout.Combined("git", "-C", sourcePath, "worktree", "remove", "--force", target); err != nil {
+		return fmt.Errorf("git worktree remove: %w", err)
 	}
 
 	// Clean up the directory if it still exists
@@ -286,7 +282,7 @@ func recreateWorktree(cfg *Config, sourcePath, repo string, number int, target s
 // listWorktrees returns the absolute paths of all registered worktrees for
 // the repo at sourcePath.
 func listWorktrees(sourcePath string) ([]string, error) {
-	out, err := exec.Command("git", "-C", sourcePath, "worktree", "list", "--porcelain").Output()
+	out, err := shellout.Output("git", "-C", sourcePath, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, err
 	}
