@@ -269,6 +269,30 @@ func colorDiffLine(line string) string {
 	}
 }
 
+// colorDiffLineWide renders a unified-diff line with a 2-wide change marker
+// ("+ ", "- ", or "  ") instead of the diff's native 1-char marker. This is
+// used in views that pair change indicators with syntax highlighting so that
+// added, deleted, and unchanged lines all align in the same column.
+func colorDiffLineWide(line string) string {
+	if len(line) == 0 {
+		return unchangedMarker
+	}
+	switch line[0] {
+	case '+':
+		return addedStyle.Render("+ " + line[1:])
+	case '-':
+		return deletedStyle.Render("- " + line[1:])
+	default:
+		// Context line: replace the native leading space with the 2-space
+		// unchanged marker.
+		body := line
+		if body[0] == ' ' {
+			body = body[1:]
+		}
+		return unchangedMarker + body
+	}
+}
+
 // renderFullFile produces a full-file view with diff lines colored
 // inline. Unchanged lines show with line numbers; additions are green,
 // deletions red. Hunk headers with mark indicators are shown at each
@@ -367,6 +391,11 @@ type fullFileBuilder struct {
 	highlighter *corediff.Highlighter // nil if highlighting not yet available
 }
 
+// unchangedMarker is the 2-space change marker prepended to unchanged
+// (context) lines so their content aligns with the "+ "/"- " markers on
+// added/deleted lines.
+const unchangedMarker = "  "
+
 func (f *fullFileBuilder) writeLine(num int, text string) {
 	prefix := ""
 	if f.outputLine == f.cursorLine {
@@ -376,13 +405,13 @@ func (f *fullFileBuilder) writeLine(num int, text string) {
 	// Use highlighted line if available.
 	if f.highlighter != nil {
 		if hl := f.highlighter.Line(num - 1); hl != "" {
-			f.b.WriteString(prefix + gutter + "  " + hl + "\n")
+			f.b.WriteString(prefix + gutter + "  " + unchangedMarker + hl + "\n")
 			f.lineMap = append(f.lineMap, num)
 			f.outputLine++
 			return
 		}
 	}
-	f.b.WriteString(prefix + gutter + "  " + text + "\n")
+	f.b.WriteString(prefix + gutter + "  " + unchangedMarker + text + "\n")
 	f.lineMap = append(f.lineMap, num)
 	f.outputLine++
 }
@@ -426,27 +455,27 @@ func (f *fullFileBuilder) emitHunkBody(bodyLines []string, newFileLine int) int 
 		}
 		switch line[0] {
 		case '+':
-			// Use highlighted line if available, otherwise fall back to green.
+			// Body is the highlighted line if available, else green text.
+			body := addedStyle.Render(line[1:])
 			if f.highlighter != nil {
 				if hl := f.highlighter.Line(newFileLine - 1); hl != "" {
-					prefix := ""
-					if f.outputLine == f.cursorLine {
-						prefix = cursorIndicator
-					}
-					gutter := lineNumStyle.Render(fmt.Sprintf("%*d", f.gutterW, newFileLine))
-					f.b.WriteString(prefix + gutter + "  " + addedStyle.Render("+ ") + hl + "\n")
-					f.lineMap = append(f.lineMap, newFileLine)
-					f.outputLine++
-					f.emitNotes(newFileLine)
-					newFileLine++
-					continue
+					body = hl
 				}
 			}
-			f.writeLine(newFileLine, addedStyle.Render(line[1:]))
+			prefix := ""
+			if f.outputLine == f.cursorLine {
+				prefix = cursorIndicator
+			}
+			gutter := lineNumStyle.Render(fmt.Sprintf("%*d", f.gutterW, newFileLine))
+			f.b.WriteString(prefix + gutter + "  " + addedStyle.Render("+ ") + body + "\n")
+			f.lineMap = append(f.lineMap, newFileLine)
+			f.outputLine++
 			f.emitNotes(newFileLine)
 			newFileLine++
 		case '-':
-			f.writeUnnum(deletedStyle.Render(line))
+			// Deleted lines get a "- " marker so their content aligns with
+			// added/context lines.
+			f.writeUnnum(deletedStyle.Render("- " + line[1:]))
 		default:
 			text := line
 			if len(text) > 0 && text[0] == ' ' {
@@ -795,7 +824,7 @@ func renderChunks(chunks []corediff.Chunk, hunks []corediff.Hunk, marks map[stri
 						}
 					}
 
-					b.WriteString(prefix + "  " + colorDiffLine(line) + "\n")
+					b.WriteString(prefix + "  " + colorDiffLineWide(line) + "\n")
 					if isFile {
 						lineMap = append(lineMap, cur)
 					} else {

@@ -2,6 +2,7 @@ package diff
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -10,6 +11,23 @@ import (
 
 	corediff "rhodium/internal/diff"
 )
+
+var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// stripANSI removes terminal color escape sequences so tests can reason
+// about visible column positions.
+func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
+
+// contentCol returns the column (byte index) where needle first appears in
+// the first line of body that contains it, after stripping ANSI codes.
+func contentCol(body, needle string) int {
+	for _, l := range strings.Split(stripANSI(body), "\n") {
+		if i := strings.Index(l, needle); i >= 0 {
+			return i
+		}
+	}
+	return -1
+}
 
 // --- renderSegment tests ---
 
@@ -786,6 +804,53 @@ func TestRenderDDiffLineStyles(t *testing.T) {
 		if !strings.Contains(out, tt.text) {
 			t.Errorf("%s: missing text %q in %q", tt.kind, tt.text, out)
 		}
+	}
+}
+
+// TestRenderFullFileAlignsAddedAndContext verifies that the "+ " marker on
+// added lines doesn't push their content out of alignment with unchanged
+// (context) lines — both should start in the same column.
+func TestRenderFullFileAlignsAddedAndContext(t *testing.T) {
+	fileContent := "ctx1\nadded\nctx2\n"
+	hunks := []corediff.Hunk{
+		{Header: "@@ -1,2 +1,3 @@", BodyLines: []string{" ctx1", "+added", " ctx2"}, Hash: "h"},
+	}
+
+	body, _, _ := renderFullFile(fileContent, hunks, nil, 0, nil, nil, nil, -1, false, nil)
+
+	ctxCol := contentCol(body, "ctx1")
+	addCol := contentCol(body, "added")
+	if ctxCol < 0 || addCol < 0 {
+		t.Fatalf("missing rendered lines:\n%s", body)
+	}
+	if ctxCol != addCol {
+		t.Errorf("content misaligned: context starts at col %d, added at col %d\n%s",
+			ctxCol, addCol, body)
+	}
+}
+
+// TestRenderChunksAlignsAddedDeletedAndContext verifies the same alignment
+// invariant in the chunk view, across added, deleted, and context lines.
+func TestRenderChunksAlignsAddedDeletedAndContext(t *testing.T) {
+	hunks := []corediff.Hunk{
+		{Header: "@@ -1,2 +1,2 @@", BodyLines: []string{" keepme", "-goneme", "+addme"}, Hash: "h"},
+	}
+	chunks := []corediff.Chunk{
+		{Signature: "block", StartLine: 1, EndLine: 2, HunkIdxs: []int{0}},
+	}
+	expanded := map[int]bool{0: true}
+
+	body, _, _ := renderChunks(chunks, hunks, nil, 0, expanded, nil, nil, nil, -1, false, nil)
+
+	keepCol := contentCol(body, "keepme")
+	goneCol := contentCol(body, "goneme")
+	addCol := contentCol(body, "addme")
+	if keepCol < 0 || goneCol < 0 || addCol < 0 {
+		t.Fatalf("missing rendered lines:\n%s", body)
+	}
+	if keepCol != addCol || keepCol != goneCol {
+		t.Errorf("content misaligned: context=%d deleted=%d added=%d\n%s",
+			keepCol, goneCol, addCol, body)
 	}
 }
 
