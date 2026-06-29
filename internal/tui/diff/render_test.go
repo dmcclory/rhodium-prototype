@@ -562,13 +562,13 @@ func TestFooterSegmentProgress(t *testing.T) {
 		{Class: corediff.ClassConflict, B1: "b", F1: "b", B2: "b\nold", F2: "b\nnew"},
 	}
 	m := &Model{
-		segmented:     true,
-		segments:      segs,
-		hunks:         corediff.SegmentHunks(segs, 0),
-		hunkIdx:       2, // first hunk of segment 1
-		catchUpMode:   true,
+		segmented:      true,
+		segments:       segs,
+		hunks:          corediff.SegmentHunks(segs, 0),
+		hunkIdx:        2, // first hunk of segment 1
+		catchUpMode:    true,
 		catchUpOldHead: "abc1234",
-		catchUpClass:  corediff.ClassConflict,
+		catchUpClass:   corediff.ClassConflict,
 	}
 	m.Resize(80, 24)
 	m.redraw()

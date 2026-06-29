@@ -91,6 +91,28 @@ type session struct {
 	review          *brain.ReviewSession
 	listOrigin      router.Route // RouteTodo or RoutePRs — where to return from files
 	pinnedAttention map[string]bool
+
+	// walk is the commit-walker context, set when a file diff was reached by
+	// drilling from glog. nil otherwise (e.g. opened from the files view).
+	walk *commitWalk
+}
+
+// commitWalk lets the diff view scrub a single file's history: the commits
+// that touched it (in order) plus the PR-level "latest". idx points at the
+// current stop, or latestIdx for the aggregate base..head view.
+type commitWalk struct {
+	path   string
+	stops  []walkStop
+	idx    int           // index into stops, or latestIdx
+	latest gh.FileChange // PR-level base..head version of the file
+}
+
+const latestIdx = -1
+
+type walkStop struct {
+	sha   string
+	title string
+	fc    gh.FileChange // commit-scoped patch for the file
 }
 
 func newSession() session {

@@ -72,9 +72,14 @@ Full example with everything the nvim integration needs:
   },
   "editor": {
     "command": "nvim"
-  }
+  },
+  "default_pr_view": "files"
 }
 ```
+
+`default_pr_view` chooses which lens a PR opens on: `"files"` (default) or
+`"commits"` (the glog commit-log view with per-commit review status). The `g`
+key toggles between the two per-session regardless of this default.
 
 ### Paths to repos
 

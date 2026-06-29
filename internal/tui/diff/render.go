@@ -21,21 +21,21 @@ var (
 	lineNumStyle     = lipgloss.NewStyle().Faint(true)
 	noteStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 	cursorStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
-	resolvedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244")) // muted gray
+	resolvedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))              // muted gray
 	storyStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("249")).Italic(true) // muted, italic story line
 
-	ddiffLabelStyle = lipgloss.NewStyle().Bold(true)
-	ddiffDroppedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))  // red
-	ddiffAddedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // green
-	ddiffKeptStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))// muted gray
-	ddiffAbsorbedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))// yellow
-	ddiffPropagatedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))// cyan
+	ddiffLabelStyle      = lipgloss.NewStyle().Bold(true)
+	ddiffDroppedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))   // red
+	ddiffAddedStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))  // green
+	ddiffKeptStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("244")) // muted gray
+	ddiffAbsorbedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))  // yellow
+	ddiffPropagatedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))  // cyan
 
 	// Chunk mode styles.
-	chunkHeaderStyle    = lipgloss.NewStyle().Bold(true)
-	chunkFocusedStyle   = lipgloss.NewStyle().Reverse(true).Bold(true)
+	chunkHeaderStyle     = lipgloss.NewStyle().Bold(true)
+	chunkFocusedStyle    = lipgloss.NewStyle().Reverse(true).Bold(true)
 	chunkComplexityStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true) // yellow warning
-	chunkSigStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("249"))           // muted signature
+	chunkSigStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("249"))          // muted signature
 )
 
 var cursorIndicator = cursorStyle.Render("▸ ")
@@ -302,13 +302,13 @@ func renderFullFile(fileContent string, hunks []corediff.Hunk, marks map[string]
 	parsed := parseHunksWithRanges(hunks)
 
 	fb := &fullFileBuilder{
-		byLine:     notesByLine(notes),
-		ghByLine:   ghInlineByLine(ghInline, notes),
-		resolvedByLine: notesByLine(resolvedNotes),
+		byLine:          notesByLine(notes),
+		ghByLine:        ghInlineByLine(ghInline, notes),
+		resolvedByLine:  notesByLine(resolvedNotes),
 		showingResolved: showingResolved,
-		gutterW:    len(fmt.Sprintf("%d", len(fileLines)+100)),
-		cursorLine: cursorLine,
-		highlighter: highlighter,
+		gutterW:         len(fmt.Sprintf("%d", len(fileLines)+100)),
+		cursorLine:      cursorLine,
+		highlighter:     highlighter,
 	}
 	hunkLineOffsets := make([]int, len(hunks))
 	newFileLine := 1
@@ -379,16 +379,16 @@ func formatHunkHeader(h corediff.Hunk, marks map[string]int, focused bool) strin
 // readable and lets the per-hunk loop reuse them without juggling
 // pointer args.
 type fullFileBuilder struct {
-	b          strings.Builder
-	lineMap    []int
-	outputLine int
-	gutterW    int
-	cursorLine int
-	byLine     map[int][]brain.Note
-	ghByLine   map[int][]gh.Comment
-	resolvedByLine map[int][]brain.Note
+	b               strings.Builder
+	lineMap         []int
+	outputLine      int
+	gutterW         int
+	cursorLine      int
+	byLine          map[int][]brain.Note
+	ghByLine        map[int][]gh.Comment
+	resolvedByLine  map[int][]brain.Note
 	showingResolved bool
-	highlighter *corediff.Highlighter // nil if highlighting not yet available
+	highlighter     *corediff.Highlighter // nil if highlighting not yet available
 }
 
 // unchangedMarker is the 2-space change marker prepended to unchanged

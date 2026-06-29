@@ -18,12 +18,12 @@ type mockBrain struct {
 	lastKind              brain.MarkKind
 }
 
-func (m *mockBrain) HunkMarks(string, int, string) map[string]int { return nil }
+func (m *mockBrain) HunkMarks(string, int, string) map[string]int  { return nil }
 func (m *mockBrain) NotesForFile(string, int, string) []brain.Note { return nil }
 func (m *mockBrain) FileReviewedState(string, int, string) brain.FileReviewState {
 	return brain.FileReviewState{}
 }
-func (m *mockBrain) IsScrutinized(string, int) bool { return false }
+func (m *mockBrain) IsScrutinized(string, int) bool                         { return false }
 func (m *mockBrain) SetHunkMarks(string, int, string, map[string]int) error { return nil }
 func (m *mockBrain) SetFileReviewed(_ string, _ int, path, _, _ string, kind brain.MarkKind) error {
 	m.setFileReviewedCalled = true

@@ -1,9 +1,13 @@
 package rhodium
 
 import (
+	"fmt"
+
 	"rhodium/internal/brain"
 	"rhodium/internal/gh"
 	coreglog "rhodium/internal/glog"
+	glogview "rhodium/internal/tui/glog"
+	"rhodium/internal/tui/router"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -21,7 +25,14 @@ func (a *app) enterGlog() tea.Cmd {
 	a.glog.BackRoute = a.session.listOrigin
 	key := brain.PRKey(pr.Repo, pr.Number)
 	if cd, ok := a.cache.prCommits[key]; ok {
-		a.glog.SetCommits(pr, a.computeRollups(pr, cd.commits, cd.files))
+		rollups := a.computeRollups(pr, cd.commits, cd.files)
+		// Returning to the same PR's glog → keep cursor/expansion, just
+		// refresh badges. Otherwise it's a fresh open.
+		if cur := a.glog.PR(); cur != nil && brain.PRKey(cur.Repo, cur.Number) == key {
+			a.glog.RefreshRollups(rollups)
+		} else {
+			a.glog.SetCommits(pr, rollups)
+		}
 		return nil
 	}
 	a.glog.SetCommits(pr, nil) // empty until the fetch lands
@@ -63,6 +74,127 @@ func (a *app) onCommitsLoaded(msg commitsLoadedMsg) tea.Cmd {
 		a.glog.SetCommits(&pr, a.computeRollups(&pr, msg.commits, msg.files))
 	}
 	return nil
+}
+
+// onGlogOpenHunk drills from glog into a commit-scoped file diff: it shows the
+// selected commit's version of the file (not the latest), positioned at the
+// chosen hunk, and arms the commit-walker so the file's history can be
+// scrubbed with [ / ] / L.
+func (a *app) onGlogOpenHunk(msg glogview.OpenHunkMsg) tea.Cmd {
+	pr := a.session.selectedPR
+	if pr == nil {
+		return nil
+	}
+	cd, ok := a.cache.prCommits[brain.PRKey(pr.Repo, pr.Number)]
+	if !ok {
+		return nil
+	}
+	walk := a.buildWalk(cd, msg.Path, msg.CommitSHA)
+	if walk == nil {
+		return nil
+	}
+	a.session.walk = walk
+	a.session.selectedFile = msg.Path
+	a.diff.BackRoute = router.RouteGlog
+	a.layout.focus(router.RouteDiff)
+	a.diff.OpenCommitFile(a.brain, pr, walk.stops[walk.idx].fc, ghInlineForFile(a, msg.Path), msg.HunkHash)
+	return nil
+}
+
+// buildWalk collects, in commit order, the commits that touched path (with
+// their commit-scoped FileChange), plus the PR-level latest version, and
+// positions the walker at startSHA.
+func (a *app) buildWalk(cd commitData, path, startSHA string) *commitWalk {
+	w := &commitWalk{path: path}
+	for _, c := range cd.commits {
+		if fc, ok := findFile(cd.files[c.SHA], path); ok {
+			w.stops = append(w.stops, walkStop{sha: c.SHA, title: c.Title, fc: fc})
+		}
+	}
+	if len(w.stops) == 0 {
+		return nil
+	}
+	for i, s := range w.stops {
+		if s.sha == startSHA {
+			w.idx = i
+			break
+		}
+	}
+	pr := a.session.selectedPR
+	if fc, ok := findFile(a.cache.prFiles[brain.PRKey(pr.Repo, pr.Number)], path); ok {
+		w.latest = fc
+	}
+	return w
+}
+
+// walkKey handles the commit-walker keys while a glog-drilled file diff is
+// open. Returns (cmd, true) when the key was a walk key.
+func (a *app) walkKey(key tea.KeyMsg) (tea.Cmd, bool) {
+	w := a.session.walk
+	switch key.String() {
+	case "]":
+		return a.walkTo(w.idx + 1), true
+	case "[":
+		if w.idx == latestIdx {
+			return a.walkTo(len(w.stops) - 1), true
+		}
+		return a.walkTo(w.idx - 1), true
+	case "L":
+		return a.walkToLatest(), true
+	}
+	return nil, false
+}
+
+func (a *app) walkTo(i int) tea.Cmd {
+	w := a.session.walk
+	if i < 0 {
+		i = 0
+	}
+	if i >= len(w.stops) {
+		i = len(w.stops) - 1
+	}
+	if i == w.idx {
+		return nil
+	}
+	w.idx = i
+	a.diff.OpenCommitFile(a.brain, a.session.selectedPR, w.stops[i].fc, ghInlineForFile(a, w.path), "")
+	return nil
+}
+
+// walkToLatest jumps to the PR-level base..head view of the file via the
+// normal Open path (so catch-up etc. apply to the aggregate diff).
+func (a *app) walkToLatest() tea.Cmd {
+	w := a.session.walk
+	if w.idx == latestIdx || w.latest.Path == "" {
+		return nil
+	}
+	w.idx = latestIdx
+	return a.diff.Open(a.brain, a.session.selectedPR, w.latest, ghInlineForFile(a, w.path))
+}
+
+func findFile(files []gh.FileChange, path string) (gh.FileChange, bool) {
+	for _, f := range files {
+		if f.Path == path {
+			return f, true
+		}
+	}
+	return gh.FileChange{}, false
+}
+
+// strip renders the walker's footer prefix shown over the diff footer.
+func (w *commitWalk) strip() string {
+	if w.idx == latestIdx {
+		return fmt.Sprintf("walk · %s · latest (PR diff) · [: commit  L: latest", w.path)
+	}
+	s := w.stops[w.idx]
+	return fmt.Sprintf("walk · %s · commit %d/%d %s · [/]: prev/next  L: latest", w.path, w.idx+1, len(w.stops), shortSHA(s.sha))
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
 }
 
 // computeRollups gathers the marks for every path the commits touch and runs

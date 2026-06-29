@@ -41,6 +41,7 @@ type FileRollup struct {
 // HunkStatus is one markable hunk and whether it's been marked.
 type HunkStatus struct {
 	Header string // the @@ ... @@ line (often carries the enclosing function)
+	Hash   string // hunk content hash — used to position the diff on drill-in
 	Marked bool
 }
 
@@ -72,7 +73,7 @@ func Rollup(commits []gh.Commit, commitFiles map[string][]gh.FileChange, marksBy
 					continue
 				}
 				isMarked := marksByPath[f.Path][h.Hash] > 0
-				fr.Hunks = append(fr.Hunks, HunkStatus{Header: h.Header, Marked: isMarked})
+				fr.Hunks = append(fr.Hunks, HunkStatus{Header: h.Header, Hash: h.Hash, Marked: isMarked})
 				fr.Total++
 				if isMarked {
 					fr.Marked++

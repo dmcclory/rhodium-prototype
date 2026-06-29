@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	railStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	caretStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	markedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // green  [✓]
 	partialStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // yellow [~]
 	shaStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
@@ -57,9 +57,36 @@ func shortSHA(sha string) string {
 	return sha
 }
 
-// commitRow renders a single collapsed commit line (without the rail/cursor
-// chrome, which renderCommits adds).
-func commitRow(c coreglog.CommitRollup) string {
+func caret(expanded bool) string {
+	if expanded {
+		return caretStyle.Render("▾")
+	}
+	return caretStyle.Render("▸")
+}
+
+func hunkMark(marked bool) string {
+	if marked {
+		return markedStyle.Render("[✓]")
+	}
+	return "[ ]"
+}
+
+// fileRoll is the per-file hunk-mark summary shown on a file row.
+func fileRoll(f coreglog.FileRollup) string {
+	switch {
+	case f.Total == 0:
+		return ""
+	case f.Marked >= f.Total:
+		return markedStyle.Render(fmt.Sprintf("✔ %d/%d", f.Marked, f.Total))
+	case f.Marked == 0:
+		return fmt.Sprintf("○ %d/%d", f.Marked, f.Total)
+	default:
+		return partialStyle.Render(fmt.Sprintf("◐ %d/%d", f.Marked, f.Total))
+	}
+}
+
+// commitNodeLine renders a commit row (depth 0) with an expand caret.
+func commitNodeLine(c coreglog.CommitRollup, expanded bool) string {
 	parts := []string{badge(c.Status), shaStyle.Render(shortSHA(c.Commit.SHA)), c.Commit.Title}
 	if c.Commit.Author != "" {
 		parts = append(parts, authorStyle.Render(c.Commit.Author))
@@ -67,77 +94,57 @@ func commitRow(c coreglog.CommitRollup) string {
 	if tail := statusTail(c); tail != "" {
 		parts = append(parts, tail)
 	}
-	return strings.Join(parts, "  ")
+	return "  " + caret(expanded) + " " + strings.Join(parts, "  ")
 }
 
-// fileLine renders one file row inside an expanded commit: a tree branch,
-// the path, +/- stats, and the file's hunk rollup.
-func fileLine(f coreglog.FileRollup, last bool) string {
-	branch := "├─"
-	if last {
-		branch = "└─"
+// fileNodeLine renders a file row (depth 1) with an expand caret.
+func fileNodeLine(f coreglog.FileRollup, expanded bool) string {
+	line := "     " + caret(expanded) + " " + f.Path +
+		statsStyle.Render(fmt.Sprintf("  +%d −%d", f.Additions, f.Deletions))
+	if roll := fileRoll(f); roll != "" {
+		line += "  " + roll
 	}
-	roll := ""
-	switch {
-	case f.Total == 0:
-	case f.Marked >= f.Total:
-		roll = markedStyle.Render(fmt.Sprintf("✔ %d/%d", f.Marked, f.Total))
-	case f.Marked == 0:
-		roll = fmt.Sprintf("○ %d/%d", f.Marked, f.Total)
-	default:
-		roll = partialStyle.Render(fmt.Sprintf("◐ %d/%d", f.Marked, f.Total))
-	}
-	return fmt.Sprintf("  %s   %s %s%s  %s",
-		railStyle.Render("│"), railStyle.Render(branch), f.Path,
-		statsStyle.Render(fmt.Sprintf("  +%d −%d", f.Additions, f.Deletions)), roll)
+	return line
 }
 
-// renderExpanded writes a commit's files → hunks tree beneath its row.
-func renderExpanded(b *strings.Builder, c coreglog.CommitRollup) {
-	for fi, f := range c.Files {
-		b.WriteString(fileLine(f, fi == len(c.Files)-1) + "\n")
-		for _, h := range f.Hunks {
-			mark := "[ ]"
-			if h.Marked {
-				mark = markedStyle.Render("[✓]")
-			}
-			b.WriteString("  " + railStyle.Render("│") + "        " + hunkStyle.Render(h.Header) + "  " + mark + "\n")
-		}
-	}
+// hunkNodeLine renders a hunk row (depth 2, leaf — no caret).
+func hunkNodeLine(h coreglog.HunkStatus) string {
+	return "         " + hunkStyle.Render(h.Header) + "  " + hunkMark(h.Marked)
 }
 
-// renderCommits produces the glog body: a header, one node per commit
-// connected by a │ rail, and a progress summary. cursor is the index of the
-// focused commit (rendered reverse-video); commits whose index is in expanded
-// show their files → hunks tree inline.
-func renderCommits(pr *gh.PR, commits []coreglog.CommitRollup, cursor int, expanded map[int]bool) string {
+// renderTree walks the flattened visible-node list and renders each row,
+// reverse-highlighting the focused one, then appends a progress summary.
+func renderTree(pr *gh.PR, commits []coreglog.CommitRollup, nodes []node, cursor int, ec map[int]bool, ef map[fileKey]bool) string {
 	var b strings.Builder
 
 	if pr != nil {
 		b.WriteString(headerStyle.Render(fmt.Sprintf(" %s#%d · %q · %d commits", pr.Repo, pr.Number, pr.Title, len(commits))) + "\n\n")
 	}
 
+	for idx, n := range nodes {
+		var line string
+		switch n.kind {
+		case kindCommit:
+			line = commitNodeLine(commits[n.ci], ec[n.ci])
+		case kindFile:
+			line = fileNodeLine(commits[n.ci].Files[n.fi], ef[fileKey{n.ci, n.fi}])
+		case kindHunk:
+			line = hunkNodeLine(commits[n.ci].Files[n.fi].Hunks[n.hi])
+		}
+		if idx == cursor {
+			line = focusedStyle.Render(line)
+		}
+		b.WriteString(line + "\n")
+	}
+
 	reviewed, marked, total := 0, 0, 0
-	for i, c := range commits {
+	for _, c := range commits {
 		if c.Status == coreglog.StatusAll {
 			reviewed++
 		}
 		marked += c.Marked
 		total += c.Total
-
-		row := commitRow(c)
-		if i == cursor {
-			row = focusedStyle.Render(row)
-		}
-		b.WriteString("  " + railStyle.Render("●") + "  " + row + "\n")
-		if expanded[i] {
-			renderExpanded(&b, c)
-		}
-		if i < len(commits)-1 {
-			b.WriteString("  " + railStyle.Render("│") + "\n")
-		}
 	}
-
 	b.WriteString("\n" + summaryStyle.Render(fmt.Sprintf("reviewed %d/%d commits · %d/%d hunks", reviewed, len(commits), marked, total)) + "\n")
 	return b.String()
 }

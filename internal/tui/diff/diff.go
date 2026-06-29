@@ -140,25 +140,25 @@ type Model struct {
 	pr   *gh.PR
 	file string
 
-	hunks      []corediff.Hunk
-	marks      map[string]int
-	notes      []brain.Note
+	hunks         []corediff.Hunk
+	marks         map[string]int
+	notes         []brain.Note
 	resolvedNotes []brain.Note // resolved (manually or stale) notes for the open file
-	ghInline   []gh.Comment
-	hunkLines  []int
-	lineMap    []int
-	hunkIdx    int
-	cursorLine int
-	diffLines  []string
-	blob       string
-	fullPatch  string // original PR-level patch from Open — used to restore full diff after toggling out of catch-up
-	highlighter *corediff.Highlighter // syntax-highlighted lines, nil until async load completes
+	ghInline      []gh.Comment
+	hunkLines     []int
+	lineMap       []int
+	hunkIdx       int
+	cursorLine    int
+	diffLines     []string
+	blob          string
+	fullPatch     string                // original PR-level patch from Open — used to restore full diff after toggling out of catch-up
+	highlighter   *corediff.Highlighter // syntax-highlighted lines, nil until async load completes
 
 	// Chunk mode state.
 	chunks         []corediff.Chunk
 	chunkIdx       int
-	chunkMode      bool            // true when rendering chunks instead of hunks
-	expandedChunks map[int]bool    // which chunks are expanded
+	chunkMode      bool             // true when rendering chunks instead of hunks
+	expandedChunks map[int]bool     // which chunks are expanded
 	chunker        corediff.Chunker // detected chunker for this file
 
 	// Catch-up diff state.
@@ -201,8 +201,8 @@ type Model struct {
 	AgentBindings []keys.Binding
 
 	// Resolved note overlay state.
-	showingResolved bool        // true when a resolved note is revealed
-	resolvedLine    int         // line number of the revealed resolved note
+	showingResolved bool // true when a resolved note is revealed
+	resolvedLine    int  // line number of the revealed resolved note
 
 	// Forget-mode state: file was removed from the PR between reviews.
 	// Awaiting user ack before advancing the brain.
@@ -218,11 +218,11 @@ func New() Model {
 	ti.SetHeight(3)
 	ti.ShowLineNumbers = false
 	return Model{
-		vp:           viewport.New(0, 0),
-		noteInput:    ti,
-		mention:      newMentionPicker(),
-		contributors: map[string][]gh.Contributor{},
-		BackRoute:    router.RouteFiles,
+		vp:             viewport.New(0, 0),
+		noteInput:      ti,
+		mention:        newMentionPicker(),
+		contributors:   map[string][]gh.Contributor{},
+		BackRoute:      router.RouteFiles,
 		expandedChunks: map[int]bool{},
 	}
 }
@@ -638,7 +638,7 @@ func reconstructFromPatch(patch string) string {
 			lines = append(lines, line[1:])
 		case ' ':
 			lines = append(lines, line[1:])
-		// Skip -, @@, ---, diff --git lines.
+			// Skip -, @@, ---, diff --git lines.
 		}
 	}
 	return strings.Join(lines, "\n")
@@ -846,6 +846,54 @@ func (m *Model) redraw() {
 	m.lineMap = lmap
 }
 
+// OpenCommitFile opens a commit-scoped file diff — the parent..commit patch
+// for a single file — positioned at the hunk whose hash is jumpHash (top if
+// empty/not found). Unlike Open it does no catch-up/diamond detection or
+// whole-file highlighting: a commit's patch is a self-contained slice of
+// history, shown as plain hunks. Marks/notes are still read from the brain by
+// (pr, path), so marking here is consistent with the rest of the PR.
+func (m *Model) OpenCommitFile(b Brain, pr *gh.PR, fc gh.FileChange, ghInline []gh.Comment, jumpHash string) {
+	m.pr = pr
+	m.file = fc.Path
+	m.blob = ""
+	m.catchUpMode = false
+	m.catchUpOldHead = ""
+	m.catchUpOldBase = ""
+	m.catchUpClass = corediff.ClassB1B2F1F2
+	m.catchUpPatch = ""
+	m.segments = nil
+	m.segmentViewIdx = 0
+	m.segmented = false
+	m.chunks = nil
+	m.chunkMode = false
+	m.expandedChunks = map[int]bool{}
+	m.highlighter = nil
+
+	m.fullPatch = fc.Patch
+	m.hunks = corediff.ParseHunks(fc.Patch)
+	m.marks = b.HunkMarks(pr.Repo, pr.Number, fc.Path)
+	m.notes = b.NotesForFile(pr.Repo, pr.Number, fc.Path)
+	m.resolvedNotes = b.ResolvedNotesForFile(pr.Repo, pr.Number, fc.Path)
+	m.ghInline = ghInline
+	m.hunkIdx = hunkIndexByHash(m.hunks, jumpHash)
+
+	m.redraw()
+	m.jumpToHunk()
+}
+
+// hunkIndexByHash returns the index of the hunk with the given content hash,
+// or 0 when the hash is empty or absent.
+func hunkIndexByHash(hunks []corediff.Hunk, hash string) int {
+	if hash != "" {
+		for i, h := range hunks {
+			if h.Hash == hash {
+				return i
+			}
+		}
+	}
+	return 0
+}
+
 func (m *Model) jumpToHunk() {
 	if m.hunkIdx < 0 || m.hunkIdx >= len(m.hunkLines) {
 		return
@@ -1001,8 +1049,8 @@ func (m *Model) jumpSegment(delta int) tea.Cmd {
 	return nil
 }
 
-func (m *Model) nextSegment() tea.Cmd  { return m.jumpSegment(1) }
-func (m *Model) prevSegment() tea.Cmd  { return m.jumpSegment(-1) }
+func (m *Model) nextSegment() tea.Cmd { return m.jumpSegment(1) }
+func (m *Model) prevSegment() tea.Cmd { return m.jumpSegment(-1) }
 
 // segmentStatusCmd returns a StatusMsg showing the current segment
 // progress when in segmented mode.

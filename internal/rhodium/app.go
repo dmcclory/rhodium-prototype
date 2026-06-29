@@ -171,6 +171,8 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.onFilesLoaded(m)
 	case commitsLoadedMsg:
 		return a, a.onCommitsLoaded(m)
+	case glogview.OpenHunkMsg:
+		return a, a.onGlogOpenHunk(m)
 	case batchFilesLoadedMsg:
 		return a, a.onBatchFilesLoaded(m)
 	case batchCommentsLoadedMsg:
@@ -223,6 +225,10 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case router.NavigatedMsg:
+		// Leaving the diff view ends any commit-walk.
+		if m.To != router.RouteDiff {
+			a.session.walk = nil
+		}
 		a.layout.focus(m.To)
 		if m.To == router.RouteGlog {
 			return a, a.enterGlog()
@@ -266,7 +272,9 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tuidiff.LeavingMsg:
 		a.rebuildFiles()
 		a.rebuildPRs()
-		return a, router.Navigate(router.RouteFiles)
+		// Return to wherever the file was opened from — files normally, or
+		// glog when we drilled in from a commit's hunk.
+		return a, router.Navigate(a.diff.BackRoute)
 	case tuidiff.FileMarkedDoneMsg:
 		a.markSessionFileDone(m.Path)
 		a.rebuildPRs()
@@ -401,6 +409,13 @@ func (a *app) routeKey(key tea.KeyMsg) tea.Cmd {
 	case router.RouteGlog:
 		return a.glog.Update(key, globalBindings(a))
 	case router.RouteDiff:
+		// Commit-walker keys ([ / ] / L) take precedence while a glog-drilled
+		// file diff is open.
+		if a.session.walk != nil {
+			if cmd, handled := a.walkKey(key); handled {
+				return cmd
+			}
+		}
 		return a.diff.Update(key, a.brain, globalBindings(a))
 	case router.RouteComments:
 		return a.comments.Update(key, globalBindings(a))
@@ -511,6 +526,8 @@ func (a *app) openFile(fc gh.FileChange) tea.Cmd {
 		return nil
 	}
 	a.session.selectedFile = fc.Path
+	a.session.walk = nil // opened from files, not a commit walk
+	a.diff.BackRoute = router.RouteFiles
 	a.layout.focus(router.RouteDiff)
 	pr := a.session.selectedPR
 	ghInline := ghInlineForFile(a, fc.Path)
@@ -731,7 +748,12 @@ func (a *app) footer() string {
 		return a.prs.Footer()
 	case router.RouteFiles:
 		return a.files.Footer()
+	case router.RouteGlog:
+		return a.glog.Footer()
 	case router.RouteDiff:
+		if a.session.walk != nil {
+			return a.session.walk.strip() + "  ·  " + a.diff.Footer()
+		}
 		return a.diff.Footer()
 	case router.RouteComments:
 		return a.comments.Footer()
