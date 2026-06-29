@@ -100,7 +100,7 @@ func cmdReview(args []string) error {
 	}
 
 	// Build prompt context and render the template.
-	ctx := rhodium.BuildPromptCtx(pr, files, "")
+	ctx := rhodium.BuildPromptCtx(pr, files, "", cfg.BaseBranch(repo))
 	prompt, err := rhodium.RenderPrompt(action, ctx)
 	if err != nil {
 		return err

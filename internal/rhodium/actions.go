@@ -51,7 +51,7 @@ func runAction(a *app, action Action) (tea.Cmd, error) {
 		worktree = w
 	}
 
-	ctx := BuildPromptCtx(pr, files, worktree)
+	ctx := BuildPromptCtx(pr, files, worktree, a.cfg.BaseBranch(pr.Repo))
 	prompt, err := RenderPrompt(action, ctx)
 	if err != nil {
 		return nil, err

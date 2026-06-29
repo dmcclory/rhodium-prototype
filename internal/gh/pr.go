@@ -19,8 +19,12 @@ type PR struct {
 	Author  string
 	HeadSHA string
 	BaseSHA string
-	Body    string
-	State   string // "OPEN", "MERGED", "CLOSED"
+	// BaseBranch is the branch this PR targets (e.g. "develop", "main"), from
+	// GitHub's baseRefName. Used as the zero-config fallback for the branch a
+	// review — and any agent it hands off to — compares against.
+	BaseBranch string
+	Body       string
+	State      string // "OPEN", "MERGED", "CLOSED"
 
 	// Live status fields — fetched fresh from `gh pr list` each session and
 	// not persisted to pr_cache. They render blank for the first ~second
@@ -38,9 +42,10 @@ type PR struct {
 type prListItem struct {
 	Number     int    `json:"number"`
 	Title      string `json:"title"`
-	HeadRefOid string `json:"headRefOid"`
-	BaseRefOid string `json:"baseRefOid"`
-	Body       string `json:"body"`
+	HeadRefOid  string `json:"headRefOid"`
+	BaseRefOid  string `json:"baseRefOid"`
+	BaseRefName string `json:"baseRefName"`
+	Body        string `json:"body"`
 	State      string `json:"state"`
 	Author     struct {
 		Login string `json:"login"`
@@ -69,7 +74,7 @@ func ListPRs(repo string) ([]PR, error) {
 func listPRsReal(repo string) ([]PR, error) {
 	out, err := shellout.Output("gh", "pr", "list",
 		"--repo", repo,
-		"--json", "number,title,author,headRefOid,baseRefOid,body,state,updatedAt,reviewDecision,isDraft,mergeable,statusCheckRollup",
+		"--json", "number,title,author,headRefOid,baseRefOid,baseRefName,body,state,updatedAt,reviewDecision,isDraft,mergeable,statusCheckRollup",
 		"--limit", "50",
 	)
 	if err != nil {
@@ -90,6 +95,7 @@ func listPRsReal(repo string) ([]PR, error) {
 			Author:         it.Author.Login,
 			HeadSHA:        it.HeadRefOid,
 			BaseSHA:        it.BaseRefOid,
+			BaseBranch:     it.BaseRefName,
 			Body:           it.Body,
 			State:          it.State,
 			ReviewDecision: it.ReviewDecision,

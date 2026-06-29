@@ -32,6 +32,14 @@ type Config struct {
 	// "commits" (the glog commit list). The `g` key toggles per-session
 	// regardless of this default.
 	DefaultPRView string `json:"default_pr_view,omitempty"`
+	// DefaultBranch is the global fallback base branch a review compares
+	// against — and the branch agents are told to diff against. Empty → fall
+	// back to each PR's real base branch from GitHub (baseRefName).
+	DefaultBranch string `json:"default_branch,omitempty"`
+	// RepoBranches maps "owner/repo" → the base branch to review against,
+	// overriding DefaultBranch. Use this where PRs target a branch (e.g.
+	// "develop") that differs from where most repos point.
+	RepoBranches map[string]string `json:"repo_branches,omitempty"`
 }
 
 // Agent is a coding-assistant binary (claude, opencode, etc). Actions pick
@@ -126,6 +134,18 @@ func (c *Config) DefaultPRViewResolved() string {
 	return "files"
 }
 
+// BaseBranch returns the configured base branch for a repo: the per-repo
+// override, then the global DefaultBranch, then "" — which the caller treats
+// as "fall back to the PR's real base branch from GitHub". This is the branch
+// the review compares against and the one agents are told to diff against
+// (instead of guessing "main").
+func (c *Config) BaseBranch(repo string) string {
+	if b := c.RepoBranches[repo]; b != "" {
+		return b
+	}
+	return c.DefaultBranch
+}
+
 // defaultStatuses ships built-in so the `S` status key works without user config.
 // The user can override entirely via config.statuses.
 func defaultStatuses() []string {
@@ -172,7 +192,8 @@ func defaultActions() []Action {
 			PromptTemplate: `You're helping review PR {{.Repo}}#{{.Number}}: {{.Title}}
 Author: {{.Author}}
 Worktree (cwd): {{.Worktree}}
-
+{{if .BaseBranch}}This PR targets the "{{.BaseBranch}}" branch. When you diff or compare, use "{{.BaseBranch}}" as the base (e.g. git diff {{.BaseBranch}}...HEAD){{if and (ne .BaseBranch "main") (ne .BaseBranch "master")}} — do NOT compare against main/master{{end}}.
+{{end}}
 Changed files:
 {{.FileList}}
 
@@ -190,7 +211,8 @@ Read whichever files seem relevant and discuss the change with me.`,
 			Delivery: "inline-notes",
 			PromptTemplate: `Do a first-pass review of PR {{.Repo}}#{{.Number}}: {{.Title}}
 Author: {{.Author}}
-
+{{if .BaseBranch}}Base branch: "{{.BaseBranch}}" — the diff below is this PR against "{{.BaseBranch}}"{{if and (ne .BaseBranch "main") (ne .BaseBranch "master")}}, not main/master{{end}}.
+{{end}}
 PR description:
 {{.Body}}
 

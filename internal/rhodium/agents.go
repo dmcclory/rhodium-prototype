@@ -18,25 +18,35 @@ type PromptCtx struct {
 	Body     string
 	HeadSHA  string
 	BaseSHA  string
-	Worktree string // absolute path; empty when the action doesn't use a worktree
-	FileList string // one line per file: "path  +A -D"
-	Patches  string // concatenated unified diffs, one file after another
+	// BaseBranch is the branch this review compares against — the configured
+	// override, else the PR's real GitHub base. Surfaced to agents so they
+	// diff/compare against it instead of assuming "main".
+	BaseBranch string
+	Worktree   string // absolute path; empty when the action doesn't use a worktree
+	FileList   string // one line per file: "path  +A -D"
+	Patches    string // concatenated unified diffs, one file after another
 }
 
 // BuildPromptCtx assembles a PromptCtx from a PR + its file list. Worktree is
 // passed in because non-worktree actions resolve it as "" and some do.
-func BuildPromptCtx(pr gh.PR, files []gh.FileChange, worktree string) PromptCtx {
+// baseBranch is the resolved comparison branch (config override → PR base);
+// pass "" to fall back to the PR's own base branch.
+func BuildPromptCtx(pr gh.PR, files []gh.FileChange, worktree, baseBranch string) PromptCtx {
+	if baseBranch == "" {
+		baseBranch = pr.BaseBranch
+	}
 	return PromptCtx{
-		Repo:     pr.Repo,
-		Number:   pr.Number,
-		Title:    pr.Title,
-		Author:   pr.Author,
-		Body:     pr.Body,
-		HeadSHA:  pr.HeadSHA,
-		BaseSHA:  pr.BaseSHA,
-		Worktree: worktree,
-		FileList: renderFileList(files),
-		Patches:  renderPatches(files),
+		Repo:       pr.Repo,
+		Number:     pr.Number,
+		Title:      pr.Title,
+		Author:     pr.Author,
+		Body:       pr.Body,
+		HeadSHA:    pr.HeadSHA,
+		BaseSHA:    pr.BaseSHA,
+		BaseBranch: baseBranch,
+		Worktree:   worktree,
+		FileList:   renderFileList(files),
+		Patches:    renderPatches(files),
 	}
 }
 
